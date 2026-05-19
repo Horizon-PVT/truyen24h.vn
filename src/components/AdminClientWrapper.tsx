@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { auth, loginWithGoogle } from '../firebase';
 import AdminDashboard from './AdminDashboard';
-import { Loader2, ShieldAlert, Sparkles, BarChart3, Library, Wallet, BookOpen, Mail } from 'lucide-react';
+import { Loader2, ShieldAlert, Sparkles, BarChart3, Library, Wallet, BookOpen, Mail, Languages } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { isAdmin } from '@/lib/admin';
@@ -43,6 +43,13 @@ const CARDS = [
     desc: 'Danh sách email đăng ký + export CSV',
     icon: Mail,
     color: 'from-purple-500 to-indigo-500',
+  },
+  {
+    href: '/admin/translator',
+    label: 'AI Translator',
+    desc: 'Dịch truyện Trung → Việt + đăng auto',
+    icon: Languages,
+    color: 'from-red-500 to-orange-500',
   },
 ];
 
