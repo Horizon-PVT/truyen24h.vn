@@ -36,23 +36,23 @@ export function buildCoverUrl(prompt: string, opts: {
   const width = opts.width ?? 600;
   const height = opts.height ?? 900;
   const seed = opts.seed ?? hashSeed(prompt);
-  const model = opts.model ?? 'flux'; // Pollinations supports: flux, turbo, dalle3
+  const model = opts.model ?? 'flux-realism'; // Pollinations: flux-realism gives cleaner photographic covers
   const nologo = opts.nologo ?? true;
 
   // Tag the prompt with style cues that work well for fiction covers.
-  // Strong negative prompts — Pollinations Flux often hallucinates Asian
-  // characters and watermarks otherwise. Repeat 'no text' keywords to bias
-  // the diffusion model away from any glyphs.
+  // Strong negative prompts — Pollinations diffusion models often
+  // hallucinate Asian glyphs and watermarks otherwise.
   const enriched = [
     prompt,
-    'cinematic book cover art',
-    'dramatic lighting, atmospheric mood',
-    'painterly digital illustration',
-    'high detail face and eyes',
-    'no text, no typography, no letters, no logos, no watermarks, no signatures',
-    'no chinese characters, no japanese characters, no korean characters',
-    'no asian script, no asian writing, no calligraphy',
-    'clean composition without any signs or banners with text',
+    'professional book cover illustration',
+    'single hero character portrait',
+    'soft dramatic lighting, painterly style',
+    'high quality digital art, ArtStation trending',
+    'beautiful detailed face, expressive eyes, well-composed',
+    'no text whatsoever, no typography, no letters, no captions',
+    'no chinese, no japanese, no korean, no asian writing, no calligraphy',
+    'no logos, no watermarks, no signatures, no UI elements, no banners',
+    'minimalist clean background, focus on subject',
   ].join(', ');
 
   const params = new URLSearchParams({

@@ -158,9 +158,17 @@ export default async function BlogPostPage({ params }: { params: Promise<{ slug:
       />
       <article className="w-full bg-background text-text-main min-h-screen">
         {post.coverUrl && (
-          <div className="w-full aspect-[3/1] md:aspect-[5/2] overflow-hidden relative">
-            <img src={post.coverUrl} alt={post.title} className="w-full h-full object-cover" />
-            <div className="absolute inset-0 bg-gradient-to-t from-background to-transparent" />
+          <div className="w-full max-w-4xl mx-auto mt-24 px-4">
+            <div className="aspect-[16/9] overflow-hidden rounded-2xl relative bg-surface">
+              <img
+                src={post.coverUrl}
+                alt={post.title}
+                width={1200}
+                height={630}
+                className="w-full h-full object-cover"
+              />
+              <div className="absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-t from-background/80 to-transparent pointer-events-none" />
+            </div>
           </div>
         )}
         <header className="max-w-3xl mx-auto px-4 pt-12 pb-6">
