@@ -24,6 +24,19 @@ export default function ReaderClient({ novel, chapter }: { novel: any, chapter: 
           dedupKey: `chapter:${novel.id}:${chapter.id}`,
         }),
       }).catch(() => { /* non-fatal */ });
+
+      // Persist reading progress so /api/reading/continue can resurface
+      // this chapter on the homepage 'Tiếp tục đọc' rail. Fire-and-forget.
+      fetch('/api/reading/progress', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          uid: u.uid,
+          novelId: novel.id,
+          chapterId: chapter.id,
+          chapterNumber: chapter.chapterNumber,
+        }),
+      }).catch(() => { /* non-fatal */ });
     });
     return () => unsub();
   }, [novel.id, chapter.id]);

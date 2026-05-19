@@ -125,9 +125,26 @@ export default function NovelDetailView({ novel, onChapterSelect, onNovelSelect,
   const [isFollowing, setIsFollowing] = useState(false);
   const [bookmarkBusy, setBookmarkBusy] = useState(false);
   const [bookmarkToast, setBookmarkToast] = useState<string | null>(null);
+  const [resumeChapter, setResumeChapter] = useState<{ id: string; number: number } | null>(null);
 
   // Use shared AuthContext — no duplicate listener
   const { userProfile } = useAuth();
+
+  // Subscribe to reading_progress for this novel so we can offer a
+  // 'Tiếp tục từ chương X' shortcut instead of jumping back to chapter 1.
+  useEffect(() => {
+    if (!user) { setResumeChapter(null); return; }
+    const ref = doc(db, `users/${user.uid}/reading_progress/${novel.id}`);
+    const unsub = onSnapshot(ref, (snap) => {
+      const data = snap.data() as any;
+      if (data?.lastChapterId && data.lastChapterNumber) {
+        setResumeChapter({ id: data.lastChapterId, number: data.lastChapterNumber });
+      } else {
+        setResumeChapter(null);
+      }
+    });
+    return () => unsub();
+  }, [user, novel.id]);
 
   // Subscribe to bookshelf row so the button reflects current state in real time.
   useEffect(() => {
@@ -366,11 +383,18 @@ export default function NovelDetailView({ novel, onChapterSelect, onNovelSelect,
               </button>
             </div>
             <div className="flex flex-col sm:flex-row flex-wrap items-center gap-3 md:gap-6">
-              <button 
-                onClick={() => allChapters[0] && onChapterSelect(allChapters[0])}
+              <button
+                onClick={() => {
+                  if (resumeChapter) {
+                    const ch = allChapters.find((c) => c.id === resumeChapter.id) || allChapters[resumeChapter.number - 1];
+                    if (ch) onChapterSelect(ch);
+                    return;
+                  }
+                  if (allChapters[0]) onChapterSelect(allChapters[0]);
+                }}
                 className="flex items-center justify-center h-12 px-6 md:h-16 md:px-12 bg-primary text-white rounded-full font-black text-xs md:text-sm tracking-widest uppercase hover:opacity-90 transition-all shadow-2xl shadow-primary/30 transform hover:-translate-y-1 w-full sm:w-auto"
               >
-                Bắt đầu đọc
+                {resumeChapter ? `Tiếp tục từ chương ${resumeChapter.number}` : 'Bắt đầu đọc'}
               </button>
               <div className="flex items-center gap-3 w-full sm:w-auto flex-1">
                 <button

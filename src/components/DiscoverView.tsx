@@ -13,6 +13,7 @@ interface DiscoverViewProps {
 const UPDATES_PER_PAGE = 5;
 
 import BannerSlider from './BannerSlider';
+import ContinueReadingRail from './ContinueReadingRail';
 
 export default function DiscoverView({ onNovelSelect }: DiscoverViewProps) {
   const [currentPage, setCurrentPage] = useState(1);
@@ -88,6 +89,7 @@ export default function DiscoverView({ onNovelSelect }: DiscoverViewProps) {
     <main className="w-full max-w-[1200px] px-4 md:px-8 pb-20 flex flex-col gap-16 mx-auto pt-4 md:pt-8">
       {/* Banner Carousel To Nhất */}
       <BannerSlider novels={allNovels} />
+      <ContinueReadingRail />
 
       <div className="flex flex-col lg:flex-row gap-8 md:gap-12">
         {/* Main Content Column */}
