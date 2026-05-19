@@ -22,11 +22,6 @@ function ChapterListPanel({ allChapters, onChapterSelect }: { allChapters: Chapt
 
   return (
     <div className="mb-20">
-      {bookmarkToast && (
-        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-[150] px-5 py-3 rounded-2xl bg-primary text-white text-sm font-bold shadow-2xl shadow-primary/30 animate-in fade-in slide-in-from-top-4 duration-300">
-          {bookmarkToast}
-        </div>
-      )}
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-3">
@@ -304,6 +299,11 @@ export default function NovelDetailView({ novel, onChapterSelect, onNovelSelect,
 
   return (
     <div className="w-full bg-background-light min-h-screen">
+      {bookmarkToast && (
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-[150] px-5 py-3 rounded-2xl bg-primary text-white text-sm font-bold shadow-2xl shadow-primary/30 animate-in fade-in slide-in-from-top-4 duration-300">
+          {bookmarkToast}
+        </div>
+      )}
       <div className="relative w-full h-[580px] overflow-hidden bg-background-dark">
         <div 
           className="absolute inset-0 bg-cover bg-center blur-3xl opacity-40 scale-110" 
