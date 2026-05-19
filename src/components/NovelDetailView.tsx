@@ -1,4 +1,4 @@
-import { Star, BookmarkPlus, Users, Eye, BookOpen, ChevronRight, Share2, MessageSquare, Clock, Flame, Sparkles, Check, BrainCircuit, Heart, Search, ArrowUpDown, ArrowUp, ArrowDown, List } from 'lucide-react';
+import { Star, BookmarkPlus, BookmarkCheck, Users, Eye, BookOpen, ChevronRight, Share2, MessageSquare, Clock, Flame, Sparkles, Check, BrainCircuit, Heart, Search, ArrowUpDown, ArrowUp, ArrowDown, List } from 'lucide-react';
 import { Novel, Chapter } from '../types';
 import { useState, useMemo, useEffect } from 'react';
 import CommentSection from './CommentSection';
@@ -22,6 +22,11 @@ function ChapterListPanel({ allChapters, onChapterSelect }: { allChapters: Chapt
 
   return (
     <div className="mb-20">
+      {bookmarkToast && (
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-[150] px-5 py-3 rounded-2xl bg-primary text-white text-sm font-bold shadow-2xl shadow-primary/30 animate-in fade-in slide-in-from-top-4 duration-300">
+          {bookmarkToast}
+        </div>
+      )}
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-3">
@@ -122,9 +127,50 @@ export default function NovelDetailView({ novel, onChapterSelect, onNovelSelect,
   const [donateAmount, setDonateAmount] = useState<number>(100);
   const [isProcessing, setIsProcessing] = useState(false);
   const [showDonateModal, setShowDonateModal] = useState(false);
+  const [isFollowing, setIsFollowing] = useState(false);
+  const [bookmarkBusy, setBookmarkBusy] = useState(false);
+  const [bookmarkToast, setBookmarkToast] = useState<string | null>(null);
 
   // Use shared AuthContext — no duplicate listener
   const { userProfile } = useAuth();
+
+  // Subscribe to bookshelf row so the button reflects current state in real time.
+  useEffect(() => {
+    if (!user) { setIsFollowing(false); return; }
+    const ref = doc(db, `users/${user.uid}/bookshelf/${novel.id}`);
+    const unsub = onSnapshot(ref, (snap) => {
+      const data = snap.data() as any;
+      setIsFollowing(!!data?.isFollowing);
+    });
+    return () => unsub();
+  }, [user, novel.id]);
+
+  // Auto-clear bookmark toast
+  useEffect(() => {
+    if (!bookmarkToast) return;
+    const t = setTimeout(() => setBookmarkToast(null), 2200);
+    return () => clearTimeout(t);
+  }, [bookmarkToast]);
+
+  async function toggleBookmark() {
+    if (!user) { onLogin(); return; }
+    setBookmarkBusy(true);
+    try {
+      const r = await fetch('/api/bookmark/toggle', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ uid: user.uid, novelId: novel.id, action: 'follow' }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Toggle failed');
+      setIsFollowing(data.following);
+      setBookmarkToast(data.following ? 'Đã thêm vào tủ sách' : 'Đã gỡ khỏi tủ sách');
+    } catch (e: any) {
+      setBookmarkToast('Lỗi: ' + (e.message || 'Không thể lưu'));
+    } finally {
+      setBookmarkBusy(false);
+    }
+  }
 
   // ✅ Fetch 30 novels một lần bằng getDocs (không onSnapshot — không real-time overhead)
   useEffect(() => {
@@ -327,29 +373,18 @@ export default function NovelDetailView({ novel, onChapterSelect, onNovelSelect,
                 Bắt đầu đọc
               </button>
               <div className="flex items-center gap-3 w-full sm:w-auto flex-1">
-                <button 
-                  onClick={async () => {
-                    if (!user) {
-                      onLogin();
-                      return;
-                    }
-                    const path = `users/${user.uid}/bookshelf/${novel.id}`;
-                    try {
-                      await setDoc(doc(db, path), {
-                        novelId: novel.id,
-                        isFollowing: true,
-                        updatedAt: serverTimestamp()
-                      }, { merge: true });
-                      alert('Đã thêm vào tủ sách!');
-                    } catch (error) {
-                      handleFirestoreError(error, OperationType.WRITE, path);
-                    }
-                  }}
-                  className="flex items-center justify-center h-12 px-6 md:h-16 md:px-12 bg-surface border-2 border-accent/10 text-text-main rounded-full font-black text-xs md:text-sm tracking-widest uppercase hover:border-primary/40 transition-all gap-2 md:gap-3 shadow-xl flex-1"
+                <button
+                  onClick={toggleBookmark}
+                  disabled={bookmarkBusy}
+                  className={`flex items-center justify-center h-12 px-6 md:h-16 md:px-12 rounded-full font-black text-xs md:text-sm tracking-widest uppercase transition-all gap-2 md:gap-3 shadow-xl flex-1 disabled:opacity-50 ${
+                    isFollowing
+                      ? 'bg-primary/10 border-2 border-primary text-primary'
+                      : 'bg-surface border-2 border-accent/10 text-text-main hover:border-primary/40'
+                  }`}
                 >
-                  <BookmarkPlus className="size-4 md:size-6" />
-                  <span className="hidden sm:inline">Thêm vào tủ sách</span>
-                  <span className="sm:hidden">Lưu</span>
+                  {isFollowing ? <BookmarkCheck className="size-4 md:size-6" /> : <BookmarkPlus className="size-4 md:size-6" />}
+                  <span className="hidden sm:inline">{isFollowing ? 'Đã lưu' : 'Thêm vào tủ sách'}</span>
+                  <span className="sm:hidden">{isFollowing ? 'Đã lưu' : 'Lưu'}</span>
                 </button>
                 <button 
                   onClick={handleShare}

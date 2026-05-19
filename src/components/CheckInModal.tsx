@@ -33,6 +33,17 @@ export default function CheckInModal({ user, onClose }: CheckInModalProps) {
 
   const today = new Date().toISOString().split('T')[0];
 
+  // After a fresh successful claim we auto-close the modal so the user
+  // doesn't have to hunt for the X button. We only auto-close when the
+  // claim happened during THIS modal session (reward set), not when the
+  // modal opens for someone who already checked in earlier today.
+  useEffect(() => {
+    if (reward) {
+      const t = setTimeout(() => onClose(), 2500);
+      return () => clearTimeout(t);
+    }
+  }, [reward, onClose]);
+
   useEffect(() => {
     const loadStatus = async () => {
       try {
