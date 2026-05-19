@@ -25,10 +25,6 @@ import { todayKey } from '@/lib/missions';
 
 export const runtime = 'nodejs';
 
-function todayKey(): string {
-  // YYYY-MM-DD in UTC. Same key used in the original CheckInModal.
-  return new Date().toISOString().split('T')[0];
-}
 
 function yesterdayKey(): string {
   const d = new Date();
