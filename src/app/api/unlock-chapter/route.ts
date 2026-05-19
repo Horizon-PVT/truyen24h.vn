@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { initializeApp, getApps } from 'firebase/app';
 import { getFirestore, doc, getDoc, writeBatch, collection, serverTimestamp, increment } from 'firebase/firestore';
+import { adminDb, serverTimestamp as adminTimestamp } from '@/lib/firebaseAdmin';
+
 
 const firebaseConfig = {
   projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
@@ -86,6 +88,26 @@ export async function POST(request: NextRequest) {
     });
 
     await batch.commit();
+
+    // Increment the 'unlock_vip' daily mission (best-effort, non-fatal).
+    try {
+      const today = new Date().toISOString().slice(0, 10);
+      const progressRef = adminDb().doc(`users/${buyerId}/daily_missions/${today}/progress/unlock_vip`);
+      const dedupKey = `chapter:${chapterId}`;
+      await adminDb().runTransaction(async (tx) => {
+        const p = await tx.get(progressRef);
+        const data = (p.exists ? p.data() : {}) as any;
+        const keys: string[] = data.dedupKeys || [];
+        if (keys.includes(dedupKey)) return;
+        tx.set(progressRef, {
+          missionId: 'unlock_vip',
+          count: (data.count || 0) + 1,
+          dedupKeys: [...keys, dedupKey],
+          updatedAt: adminTimestamp(),
+          ...(p.exists ? {} : { createdAt: adminTimestamp(), claimed: false }),
+        }, { merge: true });
+      });
+    } catch (_e) {}
 
     return NextResponse.json({
       success: true,

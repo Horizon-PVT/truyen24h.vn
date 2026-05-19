@@ -46,6 +46,32 @@ export async function POST(req: NextRequest) {
         updatedAt: serverTimestamp(),
         ...(snap.exists ? {} : { createdAt: serverTimestamp() }),
       }, { merge: true });
+
+      // Auto-credit the 'bookmark_novel' daily mission when the user
+      // FLIPS TO followed (not on un-bookmark, not on duplicate). We
+      // dedupe per (uid, novelId, date) so the same novel can't farm
+      // multiple points by toggling off/on.
+      if (following) {
+        try {
+          const today = new Date().toISOString().slice(0, 10);
+          const progressRef = db.doc(`users/${uid}/daily_missions/${today}/progress/bookmark_novel`);
+          const dedupKey = `novel:${novelId}`;
+          await db.runTransaction(async (tx) => {
+            const p = await tx.get(progressRef);
+            const data = (p.exists ? p.data() : {}) as any;
+            const keys: string[] = data.dedupKeys || [];
+            if (keys.includes(dedupKey)) return;
+            tx.set(progressRef, {
+              missionId: 'bookmark_novel',
+              count: (data.count || 0) + 1,
+              dedupKeys: [...keys, dedupKey],
+              updatedAt: serverTimestamp(),
+              ...(p.exists ? {} : { createdAt: serverTimestamp(), claimed: false }),
+            }, { merge: true });
+          });
+        } catch (e) { /* non-fatal */ }
+      }
+
       return NextResponse.json({ ok: true, following, readLater: current.isReadLater || false });
     }
 

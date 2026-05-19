@@ -1,10 +1,11 @@
 "use client";
-import { Search, ChevronDown, Menu, BookMarked, LogIn, LogOut, Sun, Moon, User as UserIcon, Coins, Sparkles, Trophy, Zap, Crown, BookPlus, Bell } from 'lucide-react';
+import { Target, Search, ChevronDown, Menu, BookMarked, LogIn, LogOut, Sun, Moon, User as UserIcon, Coins, Sparkles, Trophy, Zap, Crown, BookPlus, Bell } from 'lucide-react';
 import { GENRES } from '../constants';
 import React, { useState } from 'react';
 import { User } from 'firebase/auth';
 import ProfileEditModal from './ProfileEditModal';
 import CheckInModal from './CheckInModal';
+import MissionsModal from './MissionsModal';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
 import { isAdmin } from '@/lib/admin';
@@ -39,6 +40,7 @@ export default function TopNavBar({
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [showCheckInModal, setShowCheckInModal] = useState(false);
+  const [showMissionsModal, setShowMissionsModal] = useState(false);
 
   // Use shared AuthContext instead of duplicate listener
   const { userProfile, isAdminUser } = useAuth();
@@ -165,7 +167,10 @@ export default function TopNavBar({
                    >
                       <BookPlus className="size-3" /> Viết Truyện
                    </button>
-                   <button 
+                   <button onClick={() => setShowMissionsModal(true)} className="px-3 py-1.5 rounded-full bg-purple-500/10 text-purple-400 border border-purple-500/20 text-[10px] font-black uppercase tracking-widest hover:bg-purple-500/20 transition-all flex items-center gap-1.5 group">
+                      <Target className="size-3 group-hover:rotate-12 transition" /> Nhiệm vụ
+                    </button>
+                    <button 
                       onClick={() => setShowCheckInModal(true)}
                       className="px-4 py-1 bg-surface text-primary rounded-full text-[10px] font-bold tracking-widest border border-primary/20 hover:bg-primary hover:text-white transition-all flex items-center justify-center gap-1.5 group"
                    >
@@ -359,6 +364,9 @@ export default function TopNavBar({
           onClose={() => setShowProfileModal(false)} 
           onUpdate={() => {}}
         />
+      )}
+      {showMissionsModal && user && (
+        <MissionsModal user={user} onClose={() => setShowMissionsModal(false)} />
       )}
       {showCheckInModal && user && (
         <CheckInModal 

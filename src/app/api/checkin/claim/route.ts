@@ -21,6 +21,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { adminDb, serverTimestamp, FieldValue } from '@/lib/firebaseAdmin';
+import { todayKey } from '@/lib/missions';
 
 export const runtime = 'nodejs';
 
@@ -88,6 +89,16 @@ export async function POST(req: NextRequest) {
         bonus,
         createdAt: serverTimestamp(),
       });
+
+      // Auto-complete the daily 'check_in' mission so the missions panel
+      // reflects the action immediately without a follow-up POST.
+      tx.set(db.doc(`users/${uid}/daily_missions/${todayKey()}/progress/check_in`), {
+        missionId: 'check_in',
+        count: 1,
+        claimed: true, // mission has no separate coin reward
+        updatedAt: serverTimestamp(),
+        createdAt: serverTimestamp(),
+      }, { merge: true });
 
       return { alreadyClaimed: false, base, bonus, total, streak: nextStreak };
     });
