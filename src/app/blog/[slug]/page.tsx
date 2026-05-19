@@ -68,8 +68,18 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
  * fully control. We support: H2/H3, paragraphs, **bold**, links.
  */
 function markdownToHtml(md: string): string {
+  // 1) Gemini sometimes returns JSON content with double-escaped newlines:
+  //    e.g. "Paragraph 1\\n\\n## Header" survives JSON.parse as literal
+  //    "Paragraph 1\n\n## Header" (2 chars: backslash + n). Convert any
+  //    literal backslash-n sequences to actual newlines BEFORE rendering.
+  // 2) Also handle Windows-style \r\n.
+  const normalized = md
+    .replace(/\\r\\n/g, '\n')
+    .replace(/\\n/g, '\n')
+    .replace(/\r\n/g, '\n');
+
   // Escape any raw HTML the model might emit before we add our own.
-  const esc = md
+  const esc = normalized
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');

@@ -147,10 +147,11 @@ export default function BlogManagerClient() {
             <select
               value={listGenre}
               onChange={(e) => setListGenre(e.target.value)}
-              className="flex-1 px-3 py-3 rounded-xl bg-background border border-accent/20 text-sm"
+              style={{ colorScheme: 'dark' }}
+              className="flex-1 px-3 py-3 rounded-xl bg-background border border-accent/20 text-sm text-text-main"
             >
               {GENRES.map((g) => (
-                <option key={g} value={g}>{g}</option>
+                <option key={g} value={g} style={{ background: '#1a1a1a', color: '#fff' }}>{g}</option>
               ))}
             </select>
             <button

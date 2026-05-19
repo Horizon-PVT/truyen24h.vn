@@ -40,13 +40,19 @@ export function buildCoverUrl(prompt: string, opts: {
   const nologo = opts.nologo ?? true;
 
   // Tag the prompt with style cues that work well for fiction covers.
+  // Strong negative prompts — Pollinations Flux often hallucinates Asian
+  // characters and watermarks otherwise. Repeat 'no text' keywords to bias
+  // the diffusion model away from any glyphs.
   const enriched = [
     prompt,
-    'book cover illustration',
-    'vivid colors',
-    'centered subject',
-    'professional digital art',
-    'no text, no letters, no watermark',
+    'cinematic book cover art',
+    'dramatic lighting, atmospheric mood',
+    'painterly digital illustration',
+    'high detail face and eyes',
+    'no text, no typography, no letters, no logos, no watermarks, no signatures',
+    'no chinese characters, no japanese characters, no korean characters',
+    'no asian script, no asian writing, no calligraphy',
+    'clean composition without any signs or banners with text',
   ].join(', ');
 
   const params = new URLSearchParams({
