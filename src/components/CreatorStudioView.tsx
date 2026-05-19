@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import React, { useState, useEffect } from 'react';
 import { LayoutDashboard, BookPlus, FileText, Settings, Plus, ChevronRight, Edit3, Trash2, Eye, MessageSquare, Save, X, Image as ImageIcon, Loader2, Wallet, ArrowRightLeft, Zap, Bot } from 'lucide-react';
 import { User } from 'firebase/auth';
@@ -377,13 +378,13 @@ export default function CreatorStudioView({ user, onLogin }: CreatorStudioViewPr
               </button>
             )}
 
-            <button 
+            <div className="flex flex-wrap gap-2 items-center"><button 
               onClick={handleWithdrawClick}
               className="w-full sm:w-auto flex items-center justify-center gap-2 px-8 py-4 bg-background-light text-text-main border-2 border-accent/10 rounded-full font-black text-xs uppercase tracking-widest shadow-lg hover:border-primary hover:text-primary transition-all"
             >
               <ArrowRightLeft className="size-4" />
               <span>Yêu cầu rút tiền</span>
-            </button>
+            </button><Link href="/creator-studio/payout" className="px-4 py-2 rounded-xl bg-background-light hover:bg-primary/10 hover:text-primary border border-accent/10 text-xs font-bold uppercase tracking-widest transition">Xem chi tiết →</Link></div>
           </div>
         </div>
       )}
