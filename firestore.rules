@@ -67,5 +67,13 @@ service cloud.firestore {
       allow read: if true;
       allow write: if false;
     }
+
+    // 7. Newsletter subscribers — public form đăng ký email. Bất kỳ ai
+    // cũng tạo được; chỉ Admin SDK đọc/sửa (qua route /api/admin/*).
+    match /newsletter_subscribers/{subId} {
+      allow create: if true;
+      allow read, update, delete: if false;
+    }
+
   }
 }

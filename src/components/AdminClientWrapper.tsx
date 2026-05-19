@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { auth, loginWithGoogle } from '../firebase';
 import AdminDashboard from './AdminDashboard';
-import { Loader2, ShieldAlert, Sparkles, BarChart3, Library, Wallet, BookOpen } from 'lucide-react';
+import { Loader2, ShieldAlert, Sparkles, BarChart3, Library, Wallet, BookOpen, Mail } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { isAdmin } from '@/lib/admin';
@@ -36,6 +36,13 @@ const CARDS = [
     desc: 'Sinh review + listicle bằng AI',
     icon: BookOpen,
     color: 'from-blue-500 to-cyan-500',
+  },
+  {
+    href: '/admin/newsletter',
+    label: 'Newsletter',
+    desc: 'Danh sách email đăng ký + export CSV',
+    icon: Mail,
+    color: 'from-purple-500 to-indigo-500',
   },
 ];
 
@@ -105,7 +112,7 @@ export default function AdminClientWrapper() {
         <p className="text-muted mt-1">Trung tâm vận hành Truyen24h.vn — chọn tool bên dưới hoặc xử lý rút tiền.</p>
       </div>
 
-      <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
         {CARDS.map((c) => (
           <Link
             key={c.href}

@@ -1,6 +1,7 @@
 import React from 'react';
 import Link from 'next/link';
 import { Mail, MessageCircle, Shield, FileText, ChevronRight, Info, Sparkles } from 'lucide-react';
+import NewsletterCapture from './NewsletterCapture';
 
 export default function Footer() {
   return (
@@ -74,8 +75,10 @@ export default function Footer() {
             </ul>
           </div>
 
-          {/* Contact */}
+          {/* Contact + Newsletter */}
           <div>
+            <h3 className="text-sm font-black uppercase tracking-widest text-text-main mb-6">Đăng ký nhận truyện</h3>
+            <NewsletterCapture variant="stacked" heading="" subtitle="Email ngắn gọn mỗi Chủ Nhật: top 5 truyện hot." className="mb-6" />
             <h3 className="text-sm font-black uppercase tracking-widest text-text-main mb-6">Liên Hệ</h3>
             <ul className="space-y-4">
               <li>
