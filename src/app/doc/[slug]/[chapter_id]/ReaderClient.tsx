@@ -4,6 +4,7 @@ import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { onAuthStateChanged } from 'firebase/auth';
 import ReaderView from '@/components/ReaderView';
+import ChapterComments from '@/components/ChapterComments';
 import { auth, loginWithGoogle } from '@/firebase';
 
 export default function ReaderClient({ novel, chapter }: { novel: any, chapter: any }) {
@@ -42,14 +43,17 @@ export default function ReaderClient({ novel, chapter }: { novel: any, chapter: 
   }, [novel.id, chapter.id]);
 
   return (
-    <ReaderView
-      novel={novel}
-      chapter={chapter}
-      onBack={() => router.push(`/truyen/${novel.id}`)}
-      onLogin={loginWithGoogle}
-      onChapterChange={(ch) => {
-         router.push(`/doc/${novel.id}/${ch.id}`);
-      }}
-    />
+    <>
+      <ReaderView
+        novel={novel}
+        chapter={chapter}
+        onBack={() => router.push(`/truyen/${novel.id}`)}
+        onLogin={loginWithGoogle}
+        onChapterChange={(ch) => {
+           router.push(`/doc/${novel.id}/${ch.id}`);
+        }}
+      />
+      <ChapterComments novelId={novel.id} chapterId={chapter.id} onLogin={loginWithGoogle} />
+    </>
   );
 }

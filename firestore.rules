@@ -32,15 +32,29 @@ service cloud.firestore {
       allow create: if request.auth != null;
       allow update, delete: if request.auth != null && resource.data.authorId == request.auth.uid;
       
+      // Novel-level reviews + ratings (used by CommentSection)
+      match /reviews/{reviewId} {
+        allow read: if true;
+        allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
+        allow update, delete: if request.auth != null && resource.data.userId == request.auth.uid;
+      }
+
       // Chương truyện (Chapters)
       match /chapters/{chapterId} {
         allow read: if true;
         allow create, update, delete: if request.auth != null && get(/databases/$(database)/documents/novels/$(novelId)).data.authorId == request.auth.uid;
-        
-        // Inline Comments
+
+        // Inline Comments (paragraph-level)
         match /inline_comments/{commentId} {
           allow read: if true;
           allow create: if request.auth != null;
+          allow update, delete: if request.auth != null && resource.data.userId == request.auth.uid;
+        }
+
+        // Chapter-level comments (flat list shown under the reader)
+        match /comments/{commentId} {
+          allow read: if true;
+          allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
           allow update, delete: if request.auth != null && resource.data.userId == request.auth.uid;
         }
       }
