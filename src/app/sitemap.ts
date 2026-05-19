@@ -34,11 +34,11 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
       return {
         url: `${baseUrl}/truyen/${d.id}`,
         lastModified: new Date(ms),
-        changeFrequency: 'daily',
+        changeFrequency: 'daily' as const,
         priority: 0.8,
       };
     });
-    // Blog posts
+
     let blogUrls: MetadataRoute.Sitemap = [];
     try {
       const blogSnap = await adminDb().collection('blog_posts').get();
@@ -53,10 +53,12 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
         };
       });
     } catch {
-      // Blog collection might not exist yet — that's fine.
+      // Blog collection may not exist yet.
     }
 
     return [...staticPages, ...novelUrls, ...blogUrls];
   } catch (err) {
     // Fall back to static-only if admin creds aren't configured yet.
-    return staticPages
+    return staticPages;
+  }
+}
