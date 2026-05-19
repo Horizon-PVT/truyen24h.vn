@@ -1,48 +1,62 @@
 /**
  * Admin view of the newsletter list.
  *
- * Real-time list of subscribers with: search, copy-all-emails, export
- * to CSV. CSV is built client-side to avoid an extra API round-trip;
- * the dataset is small enough that this is fine.
+ * Fetches via /api/admin/newsletter/list (Admin SDK) because the
+ * Firestore rules block non-admin reads on the collection. Polls
+ * every 30s while the page is open to surface fresh signups.
  */
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
-import { db } from '@/firebase';
-import { collection, onSnapshot, orderBy, query } from 'firebase/firestore';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
-import { Mail, Search, Download, Copy, AlertCircle, Loader2, CheckCircle2 } from 'lucide-react';
+import { Mail, Search, Download, Copy, AlertCircle, Loader2, CheckCircle2, RefreshCw } from 'lucide-react';
 
 interface Sub {
   id: string;
   email: string;
   source?: string;
   status?: string;
-  createdAt?: any;
-}
-
-function tsToDate(ts: any): Date | null {
-  if (!ts) return null;
-  if (typeof ts.toDate === 'function') return ts.toDate();
-  if (typeof ts === 'number') return new Date(ts);
-  return null;
+  createdAt?: number | null;
 }
 
 export default function NewsletterAdminClient() {
-  const { isAdminUser } = useAuth();
+  const { user, isAdminUser } = useAuth();
+  const adminEmail = user?.email || '';
+
   const [subs, setSubs] = useState<Sub[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [copied, setCopied] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchList = useCallback(async (isPolling = false) => {
+    if (!adminEmail) return;
+    if (!isPolling) setLoading(true);
+    setRefreshing(true);
+    try {
+      const r = await fetch('/api/admin/newsletter/list', {
+        headers: { 'x-admin-email': adminEmail },
+        cache: 'no-store',
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Load failed');
+      setSubs(data.subscribers || []);
+      setError(null);
+    } catch (e: any) {
+      setError(e.message || 'Lỗi không xác định');
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, [adminEmail]);
 
   useEffect(() => {
-    const q = query(collection(db, 'newsletter_subscribers'), orderBy('createdAt', 'desc'));
-    const unsub = onSnapshot(q, (snap) => {
-      setSubs(snap.docs.map((d) => ({ id: d.id, ...d.data() })) as Sub[]);
-      setLoading(false);
-    }, () => setLoading(false));
-    return () => unsub();
-  }, []);
+    if (!isAdminUser) return;
+    fetchList();
+    const id = setInterval(() => fetchList(true), 30000);
+    return () => clearInterval(id);
+  }, [isAdminUser, fetchList]);
 
   const filtered = useMemo(() => {
     const s = search.trim().toLowerCase();
@@ -60,8 +74,7 @@ export default function NewsletterAdminClient() {
   function exportCsv() {
     const rows = ['email,source,status,created_at'];
     for (const s of filtered) {
-      const created = tsToDate(s.createdAt);
-      const dateStr = created ? created.toISOString() : '';
+      const dateStr = s.createdAt ? new Date(s.createdAt).toISOString() : '';
       rows.push(`${s.email},${s.source || ''},${s.status || ''},${dateStr}`);
     }
     const blob = new Blob([rows.join('\n')], { type: 'text/csv;charset=utf-8' });
@@ -86,12 +99,29 @@ export default function NewsletterAdminClient() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-black flex items-center gap-3">
-          <Mail className="text-primary" /> Newsletter <span className="text-sm font-normal text-muted">({subs.length} người đăng ký)</span>
-        </h1>
-        <p className="text-muted text-sm mt-1">Danh sách email đăng ký nhận truyện hằng tuần.</p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-black flex items-center gap-3">
+            <Mail className="text-primary" /> Newsletter
+            <span className="text-sm font-normal text-muted">({subs.length} người đăng ký)</span>
+          </h1>
+          <p className="text-muted text-sm mt-1">Danh sách email đăng ký nhận truyện hằng tuần.</p>
+        </div>
+        <button
+          onClick={() => fetchList()}
+          disabled={refreshing}
+          className="px-3 py-2 rounded-xl bg-surface text-sm flex items-center gap-2 border border-accent/20"
+        >
+          <RefreshCw className={`size-4 ${refreshing ? 'animate-spin' : ''}`} />
+          Refresh
+        </button>
       </div>
+
+      {error && (
+        <div className="p-3 rounded-xl bg-red-500/10 text-red-400 border border-red-500/30 text-sm">
+          {error}
+        </div>
+      )}
 
       <div className="flex gap-2 flex-wrap items-center">
         <div className="flex-1 min-w-[240px] relative">
@@ -132,23 +162,20 @@ export default function NewsletterAdminClient() {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((s) => {
-                const created = tsToDate(s.createdAt);
-                return (
-                  <tr key={s.id} className="border-t border-accent/10 hover:bg-surface/50">
-                    <td className="p-3 font-mono">{s.email}</td>
-                    <td className="p-3 text-xs text-muted">{s.source || '—'}</td>
-                    <td className="p-3 text-xs">
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase ${
-                        s.status === 'confirmed' ? 'bg-green-500/15 text-green-400' : 'bg-yellow-500/15 text-yellow-400'
-                      }`}>{s.status || 'pending'}</span>
-                    </td>
-                    <td className="p-3 text-xs text-muted">
-                      {created ? created.toLocaleString('vi-VN') : '—'}
-                    </td>
-                  </tr>
-                );
-              })}
+              {filtered.map((s) => (
+                <tr key={s.id} className="border-t border-accent/10 hover:bg-surface/50">
+                  <td className="p-3 font-mono">{s.email}</td>
+                  <td className="p-3 text-xs text-muted">{s.source || '—'}</td>
+                  <td className="p-3 text-xs">
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase ${
+                      s.status === 'confirmed' ? 'bg-green-500/15 text-green-400' : 'bg-yellow-500/15 text-yellow-400'
+                    }`}>{s.status || 'pending'}</span>
+                  </td>
+                  <td className="p-3 text-xs text-muted">
+                    {s.createdAt ? new Date(s.createdAt).toLocaleString('vi-VN') : '—'}
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
