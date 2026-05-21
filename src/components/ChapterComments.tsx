@@ -42,6 +42,7 @@ export default function ChapterComments({
   const [draft, setDraft] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!novelId || !chapterId) return;
@@ -87,14 +88,15 @@ export default function ChapterComments({
     }
   }
 
-  async function remove(id: string) {
+  async function performDelete(id: string) {
     if (!user) return;
-    if (!confirm('Xoá bình luận này?')) return;
     try {
-      const path = `novels/${novelId}/chapters/${chapterId}/comments/${id}`;
-      await deleteDoc(doc(db, path));
+      const p = `novels/${novelId}/chapters/${chapterId}/comments/${id}`;
+      await deleteDoc(doc(db, p));
     } catch (e) {
       console.error(e);
+    } finally {
+      setConfirmDeleteId(null);
     }
   }
 
@@ -183,13 +185,31 @@ export default function ChapterComments({
                     <span className="text-[10px] text-muted">{timeAgo(c.createdAt)}</span>
                   </div>
                   {user && c.userId === user.uid && (
-                    <button
-                      onClick={() => remove(c.id)}
-                      className="text-muted hover:text-red-400 transition"
-                      aria-label="Xoá"
-                    >
-                      <Trash2 className="size-3.5" />
-                    </button>
+                    {confirmDeleteId === c.id ? (
+                      <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest">
+                        <button
+                          onClick={() => performDelete(c.id)}
+                          className="px-2 py-1 rounded-md bg-red-500 text-white hover:bg-red-600"
+                        >
+                          Xoá
+                        </button>
+                        <button
+                          onClick={() => setConfirmDeleteId(null)}
+                          className="px-2 py-1 rounded-md bg-background-light text-muted hover:text-text-main"
+                        >
+                          Huỷ
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => setConfirmDeleteId(c.id)}
+                        className="text-muted hover:text-red-400 transition"
+                        aria-label="Xoá bình luận"
+                        title="Xoá"
+                      >
+                        <Trash2 className="size-3.5" />
+                      </button>
+                    )}
                   )}
                 </div>
                 <p className="text-sm text-text-main/90 whitespace-pre-wrap break-words">{c.content}</p>

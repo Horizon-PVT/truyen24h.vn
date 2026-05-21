@@ -8,6 +8,22 @@ import { collection, query, orderBy, onSnapshot, doc, setDoc, serverTimestamp, g
 import { getAIRecommendations, getNovelSummary } from '../services/geminiService';
 import { useAuth } from '@/contexts/AuthContext';
 
+function formatPublishDate(value: any): string {
+  // Translator + AI Studio writes serverTimestamp() which arrives as a
+  // Firestore Timestamp class instance on the client. Older chapters
+  // stored a plain string. We must NEVER render the object directly —
+  // React throws 'Objects are not valid as a React child' and the
+  // whole chapter list crashes the page.
+  if (!value) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value.toDate === 'function') {
+    try { return value.toDate().toLocaleDateString('vi-VN'); } catch { return ''; }
+  }
+  if (typeof value === 'number') return new Date(value).toLocaleDateString('vi-VN');
+  return '';
+}
+
+
 // ─── Chapter List Panel (scrollable, fixed-height) ─────────────────────────
 function ChapterListPanel({ allChapters, onChapterSelect }: { allChapters: Chapter[]; onChapterSelect: (c: Chapter) => void }) {
   const [search, setSearch] = useState('');
@@ -87,7 +103,7 @@ function ChapterListPanel({ allChapters, onChapterSelect }: { allChapters: Chapt
                   </span>
                   <span className="text-[11px] text-muted mt-1 flex items-center gap-1.5">
                     <Clock className="size-3 shrink-0" />
-                    {chapter.publishDate}
+                    {formatPublishDate(chapter.publishDate)}
                   </span>
                 </div>
                 <div className="p-2 bg-background-light rounded-full group-hover:bg-primary group-hover:text-white transition-all shrink-0">
@@ -128,13 +144,29 @@ export default function NovelDetailView({ novel, onChapterSelect, onNovelSelect,
   const [resumeChapter, setResumeChapter] = useState<{ id: string; number: number } | null>(null);
 
   // Use shared AuthContext — no duplicate listener
-  const { userProfile } = useAuth();
+  const { user: authUser, userProfile } = useAuth();
 
   // Subscribe to reading_progress for this novel so we can offer a
   // 'Tiếp tục từ chương X' shortcut instead of jumping back to chapter 1.
+  // We deliberately pull `authUser` from AuthContext instead of relying on
+  // the parent's prop — the prop is initialised to null and only set after
+  // onAuthStateChanged resolves, so without this the effect can race the
+  // first paint of the chapter button and leave it stuck on 'Bắt đầu đọc'.
   useEffect(() => {
-    if (!user) { setResumeChapter(null); return; }
-    const ref = doc(db, `users/${user.uid}/reading_progress/${novel.id}`);
+    const uid = authUser?.uid;
+    if (!uid) { setResumeChapter(null); return; }
+    const ref = doc(db, `users/${uid}/reading_progress/${novel.id}`);
+    // Prime via one-shot fetch so the button label updates ASAP, then
+    // attach the onSnapshot listener for live updates.
+    (async () => {
+      try {
+        const s = await getDoc(ref);
+        const data = s.data() as any;
+        if (data?.lastChapterId && data.lastChapterNumber) {
+          setResumeChapter({ id: data.lastChapterId, number: data.lastChapterNumber });
+        }
+      } catch (_e) { /* ignore */ }
+    })();
     const unsub = onSnapshot(ref, (snap) => {
       const data = snap.data() as any;
       if (data?.lastChapterId && data.lastChapterNumber) {
@@ -144,7 +176,7 @@ export default function NovelDetailView({ novel, onChapterSelect, onNovelSelect,
       }
     });
     return () => unsub();
-  }, [user, novel.id]);
+  }, [authUser, novel.id]);
 
   // Subscribe to bookshelf row so the button reflects current state in real time.
   useEffect(() => {
