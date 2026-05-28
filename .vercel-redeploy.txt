@@ -1,1 +1,2 @@
-Thu May 28 07:56:40 UTC 2026
+Thu May 28 08:03:55 UTC 2026
+redeploy after rules endpoint + workflow disable

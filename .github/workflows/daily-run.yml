@@ -11,9 +11,13 @@
 # Vào: Settings → Secrets and variables → Actions → New repository secret
 name: Daily AI Story Run
 
+# NOTE: schedule trigger removed because Vercel Pro plan already runs
+# the cron via vercel.json. Leaving only manual workflow_dispatch as a
+# fallback in case Vercel cron is ever paused. Re-enable schedule by
+# un-commenting if you switch off Vercel Pro.
 on:
-  schedule:
-    - cron: "0 1 * * *"
+  # schedule:
+  #   - cron: "0 1 * * *"
   workflow_dispatch:
     inputs:
       newNovels:
