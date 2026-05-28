@@ -36,8 +36,14 @@ jobs:
           NEW_NOVELS: ${{ github.event.inputs.newNovels || '2' }}
           CONTINUE_NOVELS: ${{ github.event.inputs.continueNovels || '5' }}
         run: |
-          if [ -z "$ADMIN_API_TOKEN" ] || [ -z "$SITE_URL" ]; then
-            echo "::error::ADMIN_API_TOKEN or SITE_URL secret not configured"
+          echo "ADMIN_API_TOKEN present: $([ -n "$ADMIN_API_TOKEN" ] && echo yes || echo NO)"
+          echo "SITE_URL present:        $([ -n "$SITE_URL" ] && echo yes || echo NO)"
+          if [ -z "$ADMIN_API_TOKEN" ]; then
+            echo "::error::Missing repo secret ADMIN_API_TOKEN — set it in Settings → Secrets and variables → Actions"
+            exit 1
+          fi
+          if [ -z "$SITE_URL" ]; then
+            echo "::error::Missing repo secret SITE_URL — set it to https://truyen24h.vn in Actions secrets"
             exit 1
           fi
           echo "Triggering daily run on $SITE_URL ..."
