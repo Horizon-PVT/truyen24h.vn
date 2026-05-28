@@ -185,7 +185,7 @@ export default function ChapterComments({
                     <span className="text-[10px] text-muted">{timeAgo(c.createdAt)}</span>
                   </div>
                   {user && c.userId === user.uid && (
-                    {confirmDeleteId === c.id ? (
+                    confirmDeleteId === c.id ? (
                       <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest">
                         <button
                           onClick={() => performDelete(c.id)}
@@ -209,7 +209,7 @@ export default function ChapterComments({
                       >
                         <Trash2 className="size-3.5" />
                       </button>
-                    )}
+                    )
                   )}
                 </div>
                 <p className="text-sm text-text-main/90 whitespace-pre-wrap break-words">{c.content}</p>
