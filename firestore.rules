@@ -14,6 +14,30 @@ service cloud.firestore {
                      !request.resource.data.diff(resource.data).affectedKeys().hasAny(['coins'])
                      || request.resource.data.coins <= resource.data.coins
                    );
+
+      // Reading progress — chỉ user ấy đọc/ghi của chính mình.
+      // Subcollections KHÔNG kế thừa rules cha, phải khai báo riêng nếu không
+      // sẽ default-deny → onSnapshot client trả empty + button không update label.
+      match /reading_progress/{novelId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
+
+      // Bookshelf — same scope: only self.
+      match /bookshelf/{bookshelfId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
+
+      // Check-in audit log — chỉ self đọc.
+      match /checkins/{date} {
+        allow read: if request.auth != null && request.auth.uid == userId;
+        allow write: if false; // chỉ Admin SDK ghi (via /api/checkin/claim)
+      }
+
+      // Daily missions progress — chỉ self đọc; ghi qua Admin SDK.
+      match /daily_missions/{date}/progress/{missionId} {
+        allow read: if request.auth != null && request.auth.uid == userId;
+        allow write: if false;
+      }
     }
 
     // 2. Cho phép CỘNG xu cho tác giả khi mua chương/donate

@@ -30,8 +30,15 @@ function ChapterListPanel({ allChapters, onChapterSelect }: { allChapters: Chapt
   const [sortAsc, setSortAsc] = useState(true);
 
   const filtered = useMemo(() => {
-    let list = allChapters.filter(c =>
-      `${c.chapterNumber} ${c.title}`.toLowerCase().includes(search.toLowerCase())
+    // Defensive: skip rows missing required fields. Translator-saved
+    // chapters occasionally land with publishDate as a Firestore
+    // Timestamp object that we render via formatPublishDate, but if
+    // title or chapterNumber are missing the whole list previously
+    // threw and triggered the error-boundary 'This page couldn't load'.
+    let list = (allChapters || []).filter((c) => c && c.id && c.title != null);
+    const s = search.toLowerCase();
+    list = list.filter((c) =>
+      `${c.chapterNumber ?? ''} ${String(c.title ?? '')}`.toLowerCase().includes(s)
     );
     return sortAsc ? list : [...list].reverse();
   }, [allChapters, search, sortAsc]);
@@ -99,7 +106,7 @@ function ChapterListPanel({ allChapters, onChapterSelect }: { allChapters: Chapt
               >
                 <div className="flex flex-col min-w-0 flex-1 mr-3">
                   <span className="font-bold text-sm text-text-main group-hover:text-primary transition-colors truncate">
-                    Chương {chapter.chapterNumber}: {chapter.title}
+                    Chương {chapter.chapterNumber}: {String(chapter.title ?? '')}
                   </span>
                   <span className="text-[11px] text-muted mt-1 flex items-center gap-1.5">
                     <Clock className="size-3 shrink-0" />
