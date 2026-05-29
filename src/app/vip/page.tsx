@@ -3,8 +3,10 @@
 import React, { useState, useEffect } from 'react';
 import { Coins, ShieldCheck, QrCode, ArrowRight, Sparkles, Loader2, Zap, ArrowLeft } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-import { auth } from '../../firebase';
+import { db, auth } from '../../firebase';
+import { doc, onSnapshot } from 'firebase/firestore';
 import { onAuthStateChanged, User } from 'firebase/auth';
+import { vipRemainingLabel, isVipActive } from '@/lib/vip';
 
 /**
  * Xu top-up packages.
@@ -29,6 +31,7 @@ const PACKAGES = [
 
 export default function VIPTopUpPage() {
   const [user, setUser] = useState<User | null>(null);
+  const [userProfile, setUserProfile] = useState<any | null>(null);
   const [selectedPack, setSelectedPack] = useState(PACKAGES[1]);
   const [isCreatingOrder, setIsCreatingOrder] = useState(false);
   const router = useRouter();
@@ -39,6 +42,23 @@ export default function VIPTopUpPage() {
     });
     return () => unsub();
   }, []);
+
+  // Live listen to the user's profile so the VIP status banner updates
+  // immediately after the webhook flips vipUntil. No polling needed.
+  useEffect(() => {
+    if (!user) {
+      setUserProfile(null);
+      return;
+    }
+    const ref = doc(db, 'users', user.uid);
+    const unsub = onSnapshot(ref, (snap) => {
+      setUserProfile(snap.exists() ? snap.data() : null);
+    });
+    return () => unsub();
+  }, [user]);
+
+  const vipActive = isVipActive(userProfile);
+  const vipRemain = vipRemainingLabel(userProfile);
 
   const handlePayOS = async () => {
     if (!user) {
@@ -92,6 +112,15 @@ export default function VIPTopUpPage() {
             
           {/* Left Side: Packages */}
           <div className="w-full lg:w-3/5">
+            {vipActive && (
+              <div className="mb-6 p-5 rounded-2xl bg-gradient-to-r from-yellow-500/15 to-amber-400/10 border border-yellow-500/40 flex items-center gap-4">
+                <Sparkles className="size-6 text-yellow-300 shrink-0" />
+                <div className="flex-1">
+                  <div className="font-black text-yellow-200 text-lg">Bạn đang là Hội Viên VIP</div>
+                  <div className="text-yellow-200/70 text-sm mt-0.5">Còn lại: {vipRemain}. Mua thêm gói tháng để gia hạn (cộng dồn 30 ngày).</div>
+                </div>
+              </div>
+            )}
             <div className="mb-10 lg:mb-12">
                <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-primary/10 border border-primary/20 text-primary w-fit mb-6 text-xs font-black uppercase tracking-widest shadow-[0_0_20px_rgba(230,57,70,0.2)]">
                  <Zap className="size-4" />

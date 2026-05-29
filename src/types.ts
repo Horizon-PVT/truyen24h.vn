@@ -49,6 +49,16 @@ export interface UserProfile {
   lastCheckIn?: string;
   unlockedChapters?: string[];
   donateQR?: string;
+  /**
+   * Set by /api/webhooks/payos when an isMonthly order is paid. Stored as
+   * a Firestore Timestamp; the client converts to millis for comparison.
+   * If `vipUntil > now`, the user has an active monthly subscription and
+   * all VIP chapters are unlocked for them without per-chapter purchase.
+   */
+  vipUntil?: any; // Firestore Timestamp | undefined
+  vipPlan?: 'monthly' | null;
+  lastTopUpAt?: any;
+  totalSpentVnd?: number;
 }
 
 export interface InlineComment {

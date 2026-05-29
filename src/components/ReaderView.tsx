@@ -6,6 +6,7 @@ import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, handleFirestoreError, OperationType, auth, storage } from '../firebase';
 import { doc, setDoc, serverTimestamp, onSnapshot, getDoc, collection, query, orderBy, addDoc } from 'firebase/firestore';
 import { useAuth } from '@/contexts/AuthContext';
+import { isChapterUnlockedByUser, isVipActive } from '@/lib/vip';
 
 interface ReaderViewProps {
   novel: Novel;
@@ -179,7 +180,9 @@ export default function ReaderView({ novel, chapter, onBack, onChapterChange, on
     setIsUnlocking(false);
   };
 
-  const isChapterLocked = chapter.isVip && (!userProfile || !(userProfile.unlockedChapters || []).includes(chapter.id));
+  // VIP monthly unlocks all VIP chapters; otherwise check per-chapter purchase.
+  const isChapterLocked = !isChapterUnlockedByUser(chapter.id, !!chapter.isVip, userProfile);
+  const vipActive = isVipActive(userProfile);
 
   const [audioQueue, setAudioQueue] = useState<string[]>([]);
 
