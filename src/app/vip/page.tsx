@@ -3,8 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import { Coins, ShieldCheck, QrCode, ArrowRight, Sparkles, Loader2, Zap, ArrowLeft } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-import { db, auth } from '../../firebase';
-import { doc, setDoc } from 'firebase/firestore';
+import { auth } from '../../firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
 
 /**
@@ -48,33 +47,25 @@ export default function VIPTopUpPage() {
     }
     setIsCreatingOrder(true);
     try {
-      const orderCode = Number(String(Date.now()).slice(-9)); 
-      const totalCoins = selectedPack.coins + selectedPack.bonus;
-
-      await setDoc(doc(db, 'orders', String(orderCode)), {
-        uid: user.uid,
-        amount: selectedPack.vnd,
-        coins: totalCoins,
-        status: "PENDING",
-        createdAt: new Date()
-      });
-
+      // Server-side order creation. We send only the trusted packId
+      // (string) — the server uses an internal catalog to compute
+      // {vnd, coins, isMonthly}. This prevents client-side tampering
+      // with coin amounts before redirect to PayOS.
       const res = await fetch('/api/payos/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          orderCode,
-          amount: selectedPack.vnd,
-          description: `WXU ${orderCode}`, 
-          returnUrl: window.location.origin, 
-          cancelUrl: window.location.href,
+          uid: user.uid,
+          packId: selectedPack.id,
+          returnUrl: `${window.location.origin}/vip?payment=success`,
+          cancelUrl: `${window.location.origin}/vip?payment=cancelled`,
         })
       });
-      
+
       const data = await res.json();
-      
+
       if (data.checkoutUrl) {
-         window.location.href = data.checkoutUrl; 
+         window.location.href = data.checkoutUrl;
       } else {
          alert("Lỗi tạo thanh toán: " + (data.error || 'Unknown'));
       }
