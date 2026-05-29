@@ -2,6 +2,7 @@ import { Star, BookmarkPlus, BookmarkCheck, Users, Eye, BookOpen, ChevronRight, 
 import { Novel, Chapter } from '../types';
 import { useState, useMemo, useEffect } from 'react';
 import CommentSection from './CommentSection';
+import ShareButtons from './ShareButtons';
 import { User } from 'firebase/auth';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { collection, query, orderBy, onSnapshot, doc, setDoc, serverTimestamp, getDoc, updateDoc, increment } from 'firebase/firestore';
@@ -452,9 +453,24 @@ export default function NovelDetailView({ novel, onChapterSelect, onNovelSelect,
                 <button 
                   onClick={handleShare}
                   className={`flex-none h-12 w-12 md:h-[64px] md:w-[64px] flex items-center justify-center bg-surface rounded-full border-2 transition-all shadow-xl ${isShared ? 'border-green-500 text-green-500' : 'border-accent/10 text-muted hover:text-primary hover:border-primary/40'}`}
+                  title="Sao chép liên kết"
+                  aria-label="Sao chép liên kết"
                 >
                   {isShared ? <Check className="size-4 md:size-6" /> : <Share2 className="size-4 md:size-6" />}
                 </button>
+              </div>
+              {/* Full social-share toolbar: FB / X / Telegram / Copy.
+                  Lives on its own row so it stays readable on mobile and
+                  doesn't compete with the primary read/save CTAs above. */}
+              <div className="mt-4 md:mt-6 -mx-2 px-2 overflow-x-auto">
+                <ShareButtons
+                  url={typeof window !== 'undefined' ? window.location.href : `https://truyen24h.vn/truyen/${novel.id}`}
+                  title={novel.title}
+                  text={(novel.description || '').slice(0, 140)}
+                  hashtags={(novel.genres || []).slice(0, 3).map((g: string) => g.replace(/\s+/g, ''))}
+                  variant="compact"
+                  className="flex-wrap gap-3"
+                />
               </div>
             </div>
           </div>

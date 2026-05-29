@@ -11,6 +11,7 @@ import { serializeFirestore } from '@/lib/serialize';
 import { absoluteUrl, SITE_NAME, SITE_LOGO_PATH } from '@/lib/site';
 import TopNavBarClientWrapper from '@/components/TopNavBarClientWrapper';
 import { Calendar, Clock, Tag } from 'lucide-react';
+import ShareButtons from '@/components/ShareButtons';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 300;
@@ -48,7 +49,7 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
       description: post.excerpt,
       url: canonical,
       siteName: SITE_NAME,
-      images: post.coverUrl ? [{ url: post.coverUrl, width: 1200, height: 630 }] : undefined,
+      images: [{ url: absoluteUrl(`/api/og/blog/${slug}`), width: 1200, height: 630, alt: post.title }],
       locale: 'vi_VN',
       type: 'article',
     },
@@ -56,7 +57,7 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
       card: 'summary_large_image',
       title: post.title,
       description: post.excerpt,
-      images: post.coverUrl ? [post.coverUrl] : undefined,
+      images: [absoluteUrl(`/api/og/blog/${slug}`)],
     },
   };
 }
@@ -185,6 +186,17 @@ export default async function BlogPostPage({ params }: { params: Promise<{ slug:
             <span className="flex items-center gap-1 text-yellow-500">
               <Tag className="size-3" /> AI-assisted
             </span>
+          </div>
+          {/* Share toolbar — full variant: blog posts have room to breathe. */}
+          <div className="mt-6 -mx-2 px-2 overflow-x-auto">
+            <ShareButtons
+              url={absoluteUrl(`/blog/${post.slug}`)}
+              title={post.title}
+              text={post.excerpt}
+              hashtags={(post.tags || []).slice(0, 3)}
+              variant="compact"
+              className="flex-wrap gap-3"
+            />
           </div>
         </header>
 
