@@ -13,7 +13,7 @@
  * Body (all optional):
  *   { newNovels?: number, continueNovels?: number, dryRun?: boolean }
  *
- * Auth: admin email (via authorizeAdmin).
+ * Auth: verified admin user or server-only machine token.
  * DB: Firebase Admin SDK — bypasses Firestore security rules.
  */
 import { NextRequest, NextResponse } from 'next/server';
@@ -31,6 +31,27 @@ export const runtime = 'nodejs';
 // Daily-run keeps payload small (1 novel + 3 chapters) to fit comfortably.
 export const maxDuration = 60;
 
+type DailyRunSummary = {
+  startedAt: string;
+  finishedAt: string;
+  newNovelsCreated: Array<{ slug: string; title: string; chapters: number }>;
+  chaptersContinued: Array<{ slug: string; chapterNumber: number }>;
+  errors: Array<{ stage: string; message: string }>;
+  dryRun: boolean;
+};
+
+type ExistingAiNovel = {
+  title?: string;
+  description?: string;
+  genres?: string[];
+  latestChapterNumber?: number;
+  lastCliffhanger?: string;
+};
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function slugify(input: string): string {
   return input
     .normalize('NFD')
@@ -42,9 +63,43 @@ function slugify(input: string): string {
     .slice(0, 80);
 }
 
+async function persistDailyRunReport(
+  db: ReturnType<typeof adminDb>,
+  summary: DailyRunSummary,
+  source: 'admin-ui' | 'cron'
+) {
+  const finishedAt = new Date();
+  const startedAt = new Date(summary.startedAt);
+  const report = {
+    ...summary,
+    finishedAt: finishedAt.toISOString(),
+    source,
+    ok: summary.errors.length === 0,
+    totals: {
+      newNovels: summary.newNovelsCreated.length,
+      newChaptersFromNewNovels: summary.newNovelsCreated.reduce((sum, item) => sum + item.chapters, 0),
+      continuedChapters: summary.chaptersContinued.length,
+      errors: summary.errors.length,
+    },
+    durationMs: finishedAt.getTime() - startedAt.getTime(),
+  };
+
+  try {
+    const id = report.startedAt.replace(/[:.]/g, '-');
+    await db.collection('ops_daily_runs').doc(id).set({
+      ...report,
+      createdAt: serverTimestamp(),
+    });
+  } catch (error) {
+    console.error('Failed to persist daily run report:', error);
+  }
+
+  return report;
+}
+
 export async function POST(req: NextRequest) {
-  const auth = authorizeAdmin(req);
-  if (!auth.ok) return NextResponse.json({ error: auth.reason }, { status: 401 });
+  const auth = await authorizeAdmin(req);
+  if (!auth.ok) return NextResponse.json({ error: auth.reason }, { status: auth.status || 401 });
 
   const body = await req.json().catch(() => ({}));
   const newNovels = Math.min(Math.max(Number(body.newNovels) || 2, 0), 5);
@@ -53,7 +108,7 @@ export async function POST(req: NextRequest) {
 
   const db = adminDb();
 
-  const summary = {
+  const summary: DailyRunSummary = {
     startedAt: new Date().toISOString(),
     finishedAt: '',
     newNovelsCreated: [] as Array<{ slug: string; title: string; chapters: number }>,
@@ -136,8 +191,8 @@ export async function POST(req: NextRequest) {
           }
 
           summary.newNovelsCreated.push({ slug, title: outline.title, chapters: chaptersWritten });
-        } catch (e: any) {
-          summary.errors.push({ stage: `new-novel:${t.topic}`, message: e.message });
+        } catch (e: unknown) {
+          summary.errors.push({ stage: `new-novel:${t.topic}`, message: getErrorMessage(e) });
         }
       }
     }
@@ -152,11 +207,11 @@ export async function POST(req: NextRequest) {
         .get();
       for (const docSnap of snap.docs) {
         try {
-          const data = docSnap.data() as any;
+          const data = docSnap.data() as ExistingAiNovel;
           const nextNum = (data.latestChapterNumber || 0) + 1;
           const chapter = await generateChapter({
-            novelTitle: data.title,
-            novelDescription: data.description,
+            novelTitle: data.title || 'Truyện chưa đặt tên',
+            novelDescription: data.description || '',
             genres: data.genres || [],
             chapterNumber: nextNum,
             previousSummary: data.lastCliffhanger || '',
@@ -188,15 +243,15 @@ export async function POST(req: NextRequest) {
           }
 
           summary.chaptersContinued.push({ slug: docSnap.id, chapterNumber: nextNum });
-        } catch (e: any) {
-          summary.errors.push({ stage: `continue:${docSnap.id}`, message: e.message });
+        } catch (e: unknown) {
+          summary.errors.push({ stage: `continue:${docSnap.id}`, message: getErrorMessage(e) });
         }
       }
     }
-  } catch (err: any) {
-    summary.errors.push({ stage: 'top-level', message: err.message });
+  } catch (err: unknown) {
+    summary.errors.push({ stage: 'top-level', message: getErrorMessage(err) });
   }
 
-  summary.finishedAt = new Date().toISOString();
-  return NextResponse.json(summary);
+  const report = await persistDailyRunReport(db, summary, 'admin-ui');
+  return NextResponse.json(report);
 }

@@ -1,12 +1,11 @@
-import Link from 'next/link';
 import React, { useState, useEffect } from 'react';
-import { LayoutDashboard, BookPlus, FileText, Settings, Plus, ChevronRight, Edit3, Trash2, Eye, MessageSquare, Save, X, Image as ImageIcon, Loader2, Wallet, ArrowRightLeft, Zap, Bot } from 'lucide-react';
+import { LayoutDashboard, BookPlus, FileText, Settings, Plus, ChevronRight, Edit3, Trash2, Eye, MessageSquare, Save, X, Image as ImageIcon, Loader2, Wallet, ArrowRightLeft, Bot } from 'lucide-react';
 import { User } from 'firebase/auth';
 import { Novel, Chapter, UserProfile } from '../types';
 import WithdrawModal from './WithdrawModal';
 import AutoBotImport from './AutoBotImport';
 import { db, handleFirestoreError, OperationType } from '../firebase';
-import { collection, query, where, onSnapshot, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, orderBy, getDoc, getDocs, writeBatch, increment } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, orderBy, getDocs, writeBatch } from 'firebase/firestore';
 import { GENRES } from '../constants';
 import { useAuth } from '@/contexts/AuthContext';
 import { isAdmin } from '@/lib/admin';
@@ -173,9 +172,10 @@ export default function CreatorStudioView({ user, onLogin }: CreatorStudioViewPr
       }
       resetNovelForm();
       alert("Lưu truyện thành công!");
-    } catch (error: any) {
+    } catch (error: unknown) {
       handleFirestoreError(error, OperationType.WRITE, 'novels');
-      alert(`Lỗi đăng truyện: ${error.message || 'Thiếu quyền Firestore hoặc lỗi kết nối. Vui lòng kiểm tra tab Console (F12) để xem chi tiết mã lỗi.'}`);
+      const message = error instanceof Error ? error.message : 'Thiếu quyền Firestore hoặc lỗi kết nối. Vui lòng kiểm tra tab Console (F12) để xem chi tiết mã lỗi.';
+      alert(`Lỗi đăng truyện: ${message}`);
     } finally {
       setIsSubmittingNovel(false);
     }
@@ -273,29 +273,24 @@ export default function CreatorStudioView({ user, onLogin }: CreatorStudioViewPr
 
   const handleConfirmWithdraw = async (bankName: string, accountName: string, accountNumber: string) => {
     if (!user || !userProfile) return;
-    const currentCoins = userProfile.coins || 0;
     
     try {
-      const batch = writeBatch(db);
-      
-      const userRef = doc(db, 'users', user.uid);
-      batch.set(userRef, { coins: 0 }, { merge: true });
-
-      const reqRef = doc(collection(db, 'withdraw_requests'));
-      batch.set(reqRef, {
-        userId: user.uid,
-        userName: userProfile.displayName || 'Khuyết danh',
-        userEmail: userProfile.email || '',
-        amountXu: currentCoins,
-        amountVND: currentCoins * 100,
-        bankName,
-        accountName,
-        accountNumber,
-        status: 'PENDING',
-        createdAt: serverTimestamp()
+      const idToken = await user.getIdToken();
+      const res = await fetch('/api/withdraw/request', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({
+          bankName,
+          accountName,
+          accountNumber,
+        }),
       });
 
-      await batch.commit();
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Withdrawal request failed');
       setShowWithdrawModal(false);
       alert('Gửi yêu cầu rút tiền thành công!');
     } catch (e) {
@@ -368,23 +363,13 @@ export default function CreatorStudioView({ user, onLogin }: CreatorStudioViewPr
             </div>
           </div>
           <div className="flex flex-col sm:flex-row items-center gap-3">
-            {isAdminUser && (
-              <button 
-                onClick={() => updateDoc(doc(db, 'users', user.uid), { coins: increment(500) })}
-                className="w-full sm:w-auto flex items-center justify-center gap-2 px-8 py-4 bg-orange-500/10 text-orange-500 rounded-full font-black text-xs uppercase tracking-widest shadow-lg hover:bg-orange-500 hover:text-white transition-all"
-              >
-                <Zap className="size-4" />
-                <span>Bơm 500 Xu (Test Admin)</span>
-              </button>
-            )}
-
-            <div className="flex flex-wrap gap-2 items-center"><button 
+            <button 
               onClick={handleWithdrawClick}
               className="w-full sm:w-auto flex items-center justify-center gap-2 px-8 py-4 bg-background-light text-text-main border-2 border-accent/10 rounded-full font-black text-xs uppercase tracking-widest shadow-lg hover:border-primary hover:text-primary transition-all"
             >
               <ArrowRightLeft className="size-4" />
               <span>Yêu cầu rút tiền</span>
-            </button><Link href="/creator-studio/payout" className="px-4 py-2 rounded-xl bg-background-light hover:bg-primary/10 hover:text-primary border border-accent/10 text-xs font-bold uppercase tracking-widest transition">Xem chi tiết →</Link></div>
+            </button>
           </div>
         </div>
       )}
@@ -551,7 +536,7 @@ export default function CreatorStudioView({ user, onLogin }: CreatorStudioViewPr
                   <div>
                     <label className="text-[10px] uppercase tracking-widest font-black text-muted mb-3 block">Trạng thái</label>
                     <select 
-                      value={status} onChange={e => setStatus(e.target.value as any)}
+                      value={status} onChange={e => setStatus(e.target.value as 'Đang ra' | 'Hoàn thành')}
                       className="w-full h-14 px-6 bg-background-light rounded-2xl border-none outline-none font-bold text-text-main focus:ring-2 focus:ring-primary/20 transition-all appearance-none"
                     >
                       <option value="Đang ra">Đang ra</option>

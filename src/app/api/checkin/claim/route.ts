@@ -1,107 +1,77 @@
-/**
- * POST /api/checkin/claim
- *
- * Daily check-in claim. Validates that the user hasn't claimed today
- * yet, credits coins server-side via Admin SDK (bypasses Firestore
- * rules that would otherwise block self-incremented coins), and
- * maintains a consecutive-day streak counter.
- *
- * Body: { uid: string }
- *
- * Reward schedule:
- *   - Base: 10 xu/day
- *   - Streak bonus on day 7:  +50 xu
- *   - Streak bonus on day 14: +120 xu
- *   - Streak bonus on day 30: +500 xu
- *
- * Auth: any signed-in user (the request body must include their uid,
- * and we cross-check the user doc actually exists). For production we
- * should additionally verify a Firebase ID token; for now the rate
- * limit + streak math keep abuse cost low (max 10 xu/24h).
- */
-import { NextRequest, NextResponse } from 'next/server';
-import { adminDb, serverTimestamp, FieldValue } from '@/lib/firebaseAdmin';
-import { todayKey } from '@/lib/missions';
+import { NextResponse } from 'next/server';
+import type { Transaction } from 'firebase-admin/firestore';
+import { requireFirebaseUser } from '@/lib/apiAuth';
+import { adminDb, FieldValue } from '@/lib/firebaseAdmin';
 
-export const runtime = 'nodejs';
+const CHECKIN_REWARD_COINS = 10;
+const CHECKIN_REWARD_POINTS = 50;
 
-
-function yesterdayKey(): string {
-  const d = new Date();
-  d.setUTCDate(d.getUTCDate() - 1);
-  return d.toISOString().split('T')[0];
+function dateKey(date: Date): string {
+  return date.toISOString().slice(0, 10);
 }
 
-function streakBonus(streakDay: number): number {
-  if (streakDay === 30) return 500;
-  if (streakDay === 14) return 120;
-  if (streakDay === 7) return 50;
-  return 0;
-}
+export async function POST(request: Request) {
+  const auth = await requireFirebaseUser(request);
+  if (!auth.ok) return auth.response;
 
-export async function POST(req: NextRequest) {
+  const uid = auth.user.uid;
+  const today = dateKey(new Date());
+  const db = adminDb();
+  const userRef = db.doc(`users/${uid}`);
+  const checkinRef = db.doc(`users/${uid}/checkins/${today}`);
+  const statsRef = db.doc(`users/${uid}/profile/stats`);
+
   try {
-    const body = await req.json().catch(() => ({}));
-    const uid = body.uid as string | undefined;
-    if (!uid) return NextResponse.json({ error: 'Missing uid' }, { status: 400 });
+    const result = await db.runTransaction(async (tx: Transaction) => {
+      const [checkinSnap, statsSnap] = await Promise.all([tx.get(checkinRef), tx.get(statsRef)]);
+      const currentStreak = Number(statsSnap.data()?.streak || 0);
 
-    const db = adminDb();
-    const userRef = db.collection('users').doc(uid);
-    const today = todayKey();
-    const yesterday = yesterdayKey();
-
-    // Atomic check-and-credit using a transaction so two concurrent
-    // requests from the same user can't both succeed.
-    const result = await db.runTransaction(async (tx) => {
-      const snap = await tx.get(userRef);
-      if (!snap.exists) throw new Error('User not found');
-      const data = snap.data() as any;
-
-      if (data.lastCheckIn === today) {
-        return { alreadyClaimed: true, streak: data.checkInStreak || 0 };
+      if (checkinSnap.exists) {
+        return {
+          alreadyClaimed: true,
+          rewardCoins: 0,
+          rewardPoints: 0,
+          streak: currentStreak,
+        };
       }
 
-      const prevStreak = Number(data.checkInStreak || 0);
-      const nextStreak = data.lastCheckIn === yesterday ? prevStreak + 1 : 1;
-
-      const base = 10;
-      const bonus = streakBonus(nextStreak);
-      const total = base + bonus;
-
-      tx.update(userRef, {
-        coins: FieldValue.increment(total),
-        lastCheckIn: today,
-        checkInStreak: nextStreak,
-        longestStreak: Math.max(Number(data.longestStreak || 0), nextStreak),
-        updatedAt: serverTimestamp(),
-      });
-
-      // Audit log
-      tx.set(db.doc(`users/${uid}/checkins/${today}`), {
+      const nextStreak = currentStreak + 1;
+      tx.set(
+        userRef,
+        {
+          coins: FieldValue.increment(CHECKIN_REWARD_COINS),
+          lastCheckIn: today,
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+      tx.set(checkinRef, {
         userId: uid,
         date: today,
-        reward: total,
-        streakDay: nextStreak,
-        bonus,
-        createdAt: serverTimestamp(),
+        reward: CHECKIN_REWARD_COINS,
+        createdAt: FieldValue.serverTimestamp(),
       });
+      tx.set(
+        statsRef,
+        {
+          lastCheckIn: FieldValue.serverTimestamp(),
+          streak: nextStreak,
+          points: FieldValue.increment(CHECKIN_REWARD_POINTS),
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
 
-      // Auto-complete the daily 'check_in' mission so the missions panel
-      // reflects the action immediately without a follow-up POST.
-      tx.set(db.doc(`users/${uid}/daily_missions/${todayKey()}/progress/check_in`), {
-        missionId: 'check_in',
-        count: 1,
-        claimed: true, // mission has no separate coin reward
-        updatedAt: serverTimestamp(),
-        createdAt: serverTimestamp(),
-      }, { merge: true });
-
-      return { alreadyClaimed: false, base, bonus, total, streak: nextStreak };
+      return {
+        alreadyClaimed: false,
+        rewardCoins: CHECKIN_REWARD_COINS,
+        rewardPoints: CHECKIN_REWARD_POINTS,
+        streak: nextStreak,
+      };
     });
 
-    return NextResponse.json({ ok: true, ...result });
-  } catch (err: any) {
-    console.error('[checkin/claim] error', err);
-    return NextResponse.json({ error: err.message || 'Check-in failed' }, { status: 500 });
+    return NextResponse.json(result);
+  } catch {
+    return NextResponse.json({ error: 'Check-in failed' }, { status: 500 });
   }
 }

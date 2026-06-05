@@ -17,19 +17,21 @@ export const runtime = 'nodejs';
 export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
-  const auth = authorizeAdmin(req);
-  if (!auth.ok) return NextResponse.json({ error: auth.reason }, { status: 401 });
+  const auth = await authorizeAdmin(req);
+  if (!auth.ok) return NextResponse.json({ error: auth.reason }, { status: auth.status || 401 });
 
   try {
     const body = await req.json().catch(() => ({}));
-    let { topic, genres, toneHints, autoTopic } = body as {
-      topic?: string;
-      genres?: string[];
+    const { toneHints, autoTopic } = body as {
       toneHints?: string;
       autoTopic?: boolean;
     };
+    let { topic, genres } = body as {
+      topic?: string;
+      genres?: string[];
+    };
 
-    let topicMeta: { reasoning?: string } = {};
+    const topicMeta: { reasoning?: string } = {};
     if (autoTopic || !topic) {
       const topics = await discoverTrendingTopics({ count: 1 });
       if (topics.length === 0) {
@@ -48,8 +50,9 @@ export async function POST(req: NextRequest) {
       topicReasoning: topicMeta.reasoning,
       novel,
     });
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error('[ai/generate-novel] error', err);
-    return NextResponse.json({ error: err.message || 'Generation failed' }, { status: 500 });
+    const message = err instanceof Error ? err.message : 'Generation failed';
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

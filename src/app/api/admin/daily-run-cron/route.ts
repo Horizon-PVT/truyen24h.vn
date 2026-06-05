@@ -27,6 +27,26 @@ export const runtime = 'nodejs';
 // Vercel Hobby plan caps maxDuration at 60s.
 export const maxDuration = 60;
 
+type DailyRunSummary = {
+  startedAt: string;
+  finishedAt: string;
+  newNovelsCreated: Array<{ slug: string; title: string; chapters: number }>;
+  chaptersContinued: Array<{ slug: string; chapterNumber: number }>;
+  errors: Array<{ stage: string; message: string }>;
+};
+
+type ExistingAiNovel = {
+  title?: string;
+  description?: string;
+  genres?: string[];
+  latestChapterNumber?: number;
+  lastCliffhanger?: string;
+};
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function slugify(input: string): string {
   return input
     .normalize('NFD')
@@ -36,6 +56,40 @@ function slugify(input: string): string {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 80);
+}
+
+async function persistDailyRunReport(
+  db: ReturnType<typeof adminDb>,
+  summary: DailyRunSummary,
+  source: 'cron'
+) {
+  const finishedAt = new Date();
+  const startedAt = new Date(summary.startedAt);
+  const report = {
+    ...summary,
+    finishedAt: finishedAt.toISOString(),
+    source,
+    ok: summary.errors.length === 0,
+    totals: {
+      newNovels: summary.newNovelsCreated.length,
+      newChaptersFromNewNovels: summary.newNovelsCreated.reduce((sum, item) => sum + item.chapters, 0),
+      continuedChapters: summary.chaptersContinued.length,
+      errors: summary.errors.length,
+    },
+    durationMs: finishedAt.getTime() - startedAt.getTime(),
+  };
+
+  try {
+    const id = report.startedAt.replace(/[:.]/g, '-');
+    await db.collection('ops_daily_runs').doc(id).set({
+      ...report,
+      createdAt: serverTimestamp(),
+    });
+  } catch (error) {
+    console.error('Failed to persist cron daily run report:', error);
+  }
+
+  return report;
 }
 
 export async function GET(req: NextRequest) {
@@ -56,7 +110,7 @@ export async function GET(req: NextRequest) {
 
   const db = adminDb();
 
-  const summary = {
+  const summary: DailyRunSummary = {
     startedAt: new Date().toISOString(),
     finishedAt: '',
     newNovelsCreated: [] as Array<{ slug: string; title: string; chapters: number }>,
@@ -113,8 +167,8 @@ export async function GET(req: NextRequest) {
             chaptersWritten++;
           }
           summary.newNovelsCreated.push({ slug, title: outline.title, chapters: chaptersWritten });
-        } catch (e: any) {
-          summary.errors.push({ stage: `new-novel:${t.topic}`, message: e.message });
+        } catch (e: unknown) {
+          summary.errors.push({ stage: `new-novel:${t.topic}`, message: getErrorMessage(e) });
         }
       }
     }
@@ -128,11 +182,11 @@ export async function GET(req: NextRequest) {
         .get();
       for (const docSnap of snap.docs) {
         try {
-          const data = docSnap.data() as any;
+          const data = docSnap.data() as ExistingAiNovel;
           const nextNum = (data.latestChapterNumber || 0) + 1;
           const chapter = await generateChapter({
-            novelTitle: data.title,
-            novelDescription: data.description,
+            novelTitle: data.title || 'Truyện chưa đặt tên',
+            novelDescription: data.description || '',
             genres: data.genres || [],
             chapterNumber: nextNum,
             previousSummary: data.lastCliffhanger || '',
@@ -154,15 +208,15 @@ export async function GET(req: NextRequest) {
           });
           await batch.commit();
           summary.chaptersContinued.push({ slug: docSnap.id, chapterNumber: nextNum });
-        } catch (e: any) {
-          summary.errors.push({ stage: `continue:${docSnap.id}`, message: e.message });
+        } catch (e: unknown) {
+          summary.errors.push({ stage: `continue:${docSnap.id}`, message: getErrorMessage(e) });
         }
       }
     }
-  } catch (err: any) {
-    summary.errors.push({ stage: 'top-level', message: err.message });
+  } catch (err: unknown) {
+    summary.errors.push({ stage: 'top-level', message: getErrorMessage(err) });
   }
 
-  summary.finishedAt = new Date().toISOString();
-  return NextResponse.json(summary);
+  const report = await persistDailyRunReport(db, summary, 'cron');
+  return NextResponse.json(report);
 }

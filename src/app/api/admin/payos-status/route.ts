@@ -3,19 +3,25 @@
  *
  *   GET /api/admin/payos-status?token=<ADMIN_API_TOKEN>
  *
- * Returns:
- *   - env presence (so we can confirm Vercel still has PayOS creds)
- *   - last 10 orders sorted by createdAt (status PENDING vs PAID)
- *   - aggregate revenue counters
- *
- * Use this after a real test payment to confirm webhook fired without
- * having to crawl Vercel logs. No PII is exposed beyond truncated uid.
+ * Returns env presence, last 10 orders, and aggregate revenue counters.
+ * No secret values are exposed.
  */
 import { NextResponse } from 'next/server';
 import { adminDb } from '@/lib/firebaseAdmin';
+import type { DocumentData, QueryDocumentSnapshot, QuerySnapshot } from 'firebase-admin/firestore';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+
+type FirestoreTimestampLike = {
+  toMillis?: () => number;
+};
+
+type OrderData = Record<string, FirestoreTimestampLike | string | number | boolean | undefined>;
+
+function toMillisOrNull(value: OrderData[string]): number | null {
+  return typeof value === 'object' ? value?.toMillis?.() || null : null;
+}
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
@@ -33,43 +39,42 @@ export async function GET(req: Request) {
   };
 
   const db = adminDb();
-  let snap;
+  let snap: QuerySnapshot<DocumentData>;
   try {
     snap = await db
       .collection('orders')
       .orderBy('createdAt', 'desc')
       .limit(10)
       .get();
-  } catch (err: any) {
+  } catch (err: unknown) {
     return NextResponse.json({
       ok: false,
       env,
-      error: err?.message || String(err),
+      error: err instanceof Error ? err.message : String(err),
     });
   }
 
-  const orders = snap.docs.map((d) => {
-    const data = d.data() as any;
+  const orders = snap.docs.map((d: QueryDocumentSnapshot<DocumentData>) => {
+    const data = d.data() as OrderData;
     return {
       orderCode: d.id,
-      uid: data.uid ? `${String(data.uid).slice(0, 6)}…` : null,
+      uid: data.uid ? `${String(data.uid).slice(0, 6)}...` : null,
       amount: data.amount,
       coins: data.coins,
       packId: data.packId || null,
       isMonthly: !!data.isMonthly,
       status: data.status,
-      createdAt: data.createdAt?.toMillis?.() || null,
-      paidAt: data.paidAt?.toMillis?.() || null,
+      createdAt: toMillisOrNull(data.createdAt),
+      paidAt: toMillisOrNull(data.paidAt),
     };
   });
 
-  // Aggregate revenue from PAID orders only.
   let totalPaidVnd = 0;
   let totalPaidCount = 0;
   let totalPendingCount = 0;
-  for (const o of orders) {
-    if (o.status === 'PAID') {
-      totalPaidVnd += Number(o.amount) || 0;
+  for (const order of orders) {
+    if (order.status === 'PAID') {
+      totalPaidVnd += Number(order.amount) || 0;
       totalPaidCount++;
     } else {
       totalPendingCount++;

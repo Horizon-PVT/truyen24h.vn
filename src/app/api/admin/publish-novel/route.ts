@@ -14,7 +14,7 @@
  *   aiAssisted?: boolean      // defaults true when called from AI pipeline
  * }
  *
- * Auth: admin only (x-admin-token or x-admin-email).
+ * Auth: verified admin user or server-only machine token.
  * DB: Firebase Admin SDK — bypasses Firestore security rules.
  */
 import { NextRequest, NextResponse } from 'next/server';
@@ -42,8 +42,8 @@ function slugify(input: string): string {
 }
 
 export async function POST(req: NextRequest) {
-  const auth = authorizeAdmin(req);
-  if (!auth.ok) return NextResponse.json({ error: auth.reason }, { status: 401 });
+  const auth = await authorizeAdmin(req);
+  if (!auth.ok) return NextResponse.json({ error: auth.reason }, { status: auth.status || 401 });
 
   try {
     const body = await req.json();

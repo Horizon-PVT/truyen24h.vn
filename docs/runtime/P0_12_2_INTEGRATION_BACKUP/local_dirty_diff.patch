@@ -1,0 +1,3295 @@
+﻿diff --git a/.gitignore b/.gitignore
+index 5ef6a52..8ed77d9 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -39,3 +39,4 @@ yarn-error.log*
+ # typescript
+ *.tsbuildinfo
+ next-env.d.ts
++tsconfig.check.json
+diff --git a/AGENTS.md b/AGENTS.md
+index 8bd0e39..8e5359c 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -3,3 +3,12 @@
+ 
+ This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
+ <!-- END:nextjs-agent-rules -->
++
++## Truyen24h Operating Rulebook
++
++Before working on this repository, future AI/dev agents must read
++`docs/TRUYEN24H_AGENT_OPERATING_CONSTITUTION_AND_MONEY_AUTOMATION.md`.
++Runtime, security, payment, Firestore rules, automation, and monetization work
++must follow that document. Do not treat automated operation as approval to
++handle money, secrets, production deploys, Firestore rules deployment, or other
++high-risk actions without explicit owner approval.
+diff --git a/firestore.rules b/firestore.rules
+index 8a19363..f7e1fc2 100644
+--- a/firestore.rules
++++ b/firestore.rules
+@@ -1,69 +1,214 @@
+ rules_version = '2';
+ service cloud.firestore {
+   match /databases/{database}/documents {
+-    // 1. Users Collection
++    function signedIn() {
++      return request.auth != null;
++    }
++
++    function isOwner(userId) {
++      return signedIn() && request.auth.uid == userId;
++    }
++
++    function safeUserCreateFields() {
++      return [
++        'uid',
++        'displayName',
++        'email',
++        'photoURL',
++        'bio',
++        'preferences',
++        'readingSettings',
++        'theme',
++        'createdAt',
++        'updatedAt'
++      ];
++    }
++
++    function safeUserUpdateFields() {
++      return [
++        'uid',
++        'displayName',
++        'email',
++        'photoURL',
++        'bio',
++        'preferences',
++        'readingSettings',
++        'theme',
++        'createdAt',
++        'updatedAt',
++        'lastActiveAt'
++      ];
++    }
++
++    function safeBookshelfFields() {
++      return [
++        'novelId',
++        'lastChapterId',
++        'lastChapterNumber',
++        'progress',
++        'isFollowing',
++        'isReadLater',
++        'createdAt',
++        'updatedAt'
++      ];
++    }
++
++    function isNovelAuthor(novelId) {
++      return signedIn()
++        && get(/databases/$(database)/documents/novels/$(novelId)).data.authorId == request.auth.uid;
++    }
++
++    // Users: public profile reads are preserved, but money/admin/accounting
++    // fields are server-only and omitted from all client-writable allowlists.
+     match /users/{userId} {
+-      // Cho phép đọc thông tin user công khai (như avatar, tên)
+       allow read: if true;
+-      
+-      // Cho phép user tự sửa thông tin CỦA MÌNH nhưng KHÔNG ĐƯỢC CHẠM VÀO SỐ DƯ (coins)
+-      // Ngoại trừ nếu họ vừa gửi writeBatch để trừ xu.
+-      // Dành riêng cho Client-side logic mở khoá chương.
+-      allow write: if request.auth != null && request.auth.uid == userId 
+-                   && (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'photoURL', 'email', 'unlockedChapters', 'coins']))
+-                   // Kiểm tra nếu coins bị sửa, giá trị MỚI phải BÉ HƠN HOẶC BẰNG giá trị CŨ (Chỉ được phép trừ xu, không được tự cộng thêm xu)
+-                   && (
+-                     !request.resource.data.diff(resource.data).affectedKeys().hasAny(['coins'])
+-                     || request.resource.data.coins <= resource.data.coins
+-                   );
+-                   
+-      // Mở quyền Admin nếu cần (Ở đây tạm đóng)
+-    }
+-
+-    // 2. Tác giả khi nhận 60% xu
+-    // Firebase Client khó chặn triệt để vụ này vì hàm writeBatch đang gọi trên Client. Tạm thời sử dụng Allow cho logic + xu từ thằng người mua.
+-    // Cách an toàn tuyệt đối là đưa hàm Mở khoá chương lên Firebase Cloud Functions.
+-    // Ở bản V2 này, để Client chạy được writeBatch cộng xu người khác, ta nới lỏng cho phép `increment` xu.
+-    match /users/{authorId} {
+-       allow update: if request.auth != null 
+-                     && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['coins'])
+-                     && request.resource.data.coins > resource.data.coins;
+-    }
+-
+-    // 2. Truyện (Novels)
++
++      allow create: if isOwner(userId)
++        && request.resource.data.keys().hasOnly(safeUserCreateFields())
++        && request.resource.data.uid == userId;
++
++      allow update: if isOwner(userId)
++        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(safeUserUpdateFields())
++        && (!('uid' in request.resource.data) || request.resource.data.uid == userId);
++
++      allow delete: if false;
++
++      // Non-money reading progress / bookshelf data. Paid unlock state must stay
++      // on the server-controlled user document, not in this client-writable path.
++      match /bookshelf/{novelId} {
++        allow read: if isOwner(userId);
++        allow create, update: if isOwner(userId)
++          && request.resource.data.keys().hasOnly(safeBookshelfFields())
++          && (!('novelId' in request.resource.data) || request.resource.data.novelId == novelId);
++        allow delete: if isOwner(userId);
++      }
++
++      // Reward/accounting records are written by server routes using Admin SDK.
++      match /checkins/{checkinId} {
++        allow read: if isOwner(userId);
++        allow write: if false;
++      }
++
++      match /missions/{missionId} {
++        allow read: if isOwner(userId);
++        allow write: if false;
++      }
++
++      match /profile/{profileDocId} {
++        allow read: if isOwner(userId);
++        allow write: if false;
++      }
++
++      match /{document=**} {
++        allow read: if isOwner(userId);
++        allow write: if false;
++      }
++    }
++
++    // Public fiction content remains readable. Authors can still manage their
++    // own novels/chapters from the client; admin/server publishing bypasses
++    // rules through Firebase Admin SDK.
+     match /novels/{novelId} {
+-      allow read: if true; // Ai cũng đọc được bìa truyện
+-      allow create: if request.auth != null; // User đăng nhập được tạo truyện
+-      // Chỉ tác giả gốc mới được edit truyện của mình
+-      allow update, delete: if request.auth != null && resource.data.authorId == request.auth.uid;
+-      
+-      // Chương truyện (Chapters)
++      allow read: if true;
++      allow create: if signedIn()
++        && request.resource.data.authorId == request.auth.uid;
++      allow update: if signedIn()
++        && resource.data.authorId == request.auth.uid
++        && request.resource.data.authorId == resource.data.authorId;
++      allow delete: if signedIn()
++        && resource.data.authorId == request.auth.uid;
++
+       match /chapters/{chapterId} {
+-        allow read: if true; // Chương khoá vẫn đọc được tiêu đề
+-        allow create, update, delete: if request.auth != null && get(/databases/$(database)/documents/novels/$(novelId)).data.authorId == request.auth.uid;
+-        
+-        // Inline Comments
++        allow read: if true;
++        allow create, update, delete: if isNovelAuthor(novelId);
++
+         match /inline_comments/{commentId} {
+           allow read: if true;
+-          allow create: if request.auth != null;
+-          allow update, delete: if request.auth != null && resource.data.userId == request.auth.uid;
++          allow create: if signedIn()
++            && request.resource.data.userId == request.auth.uid;
++          allow update, delete: if signedIn()
++            && resource.data.userId == request.auth.uid;
+         }
+       }
+     }
+ 
+-    // 3. Lịch sử Giao Dịch
++    // Public blog reads are preserved. Writes must go through admin/server code.
++    match /blog_posts/{postId} {
++      allow read: if true;
++      allow write: if false;
++    }
++
++    // Payment/order/accounting collections are server-only for writes. Users may
++    // read only records tied to their verified uid where the owner field exists.
++    match /orders/{orderId} {
++      allow read: if signedIn() && resource.data.uid == request.auth.uid;
++      allow write: if false;
++    }
++
+     match /transactions/{txId} {
+-      allow read: if request.auth != null && (resource.data.buyerId == request.auth.uid || resource.data.authorId == request.auth.uid);
+-      // Chỉ cho phép user tạo log trừ khi họ đang trả tiền
+-      allow create: if request.auth != null && request.resource.data.buyerId == request.auth.uid;
+-      allow update, delete: if false; // Không ai được sửa lịch sử giao dịch
++      allow read: if signedIn()
++        && (
++          resource.data.uid == request.auth.uid
++          || resource.data.buyerId == request.auth.uid
++          || resource.data.donorId == request.auth.uid
++          || resource.data.authorId == request.auth.uid
++        );
++      allow write: if false;
++    }
++
++    match /payments/{paymentId} {
++      allow read: if signedIn() && resource.data.uid == request.auth.uid;
++      allow write: if false;
++    }
++
++    match /payos_orders/{orderId} {
++      allow read: if signedIn() && resource.data.uid == request.auth.uid;
++      allow write: if false;
++    }
++
++    match /payment_logs/{logId} {
++      allow read, write: if false;
++    }
++
++    match /revenue_events/{eventId} {
++      allow read, write: if false;
++    }
++
++    match /platform_revenue/{docId} {
++      allow read, write: if false;
++    }
++
++    match /withdraw_requests/{requestId} {
++      allow read: if signedIn() && resource.data.userId == request.auth.uid;
++      allow write: if false;
++    }
++
++    // Admin, ops, and configuration state are not client-writable.
++    match /admin/{document=**} {
++      allow read, write: if false;
++    }
++
++    match /config/{document=**} {
++      allow read, write: if false;
++    }
++
++    match /ops_daily_runs/{runId} {
++      allow read, write: if false;
++    }
++
++    // Community chat remains non-money user content.
++    match /channels/{channelId}/messages/{messageId} {
++      allow read: if true;
++      allow create: if signedIn()
++        && request.resource.data.userId == request.auth.uid;
++      allow update, delete: if signedIn()
++        && resource.data.userId == request.auth.uid;
+     }
+ 
+-    // 4. Lệnh rút tiền
+-    match /withdraw_requests/{reqId} {
+-      allow read: if request.auth != null && resource.data.userId == request.auth.uid;
+-      allow create: if request.auth != null && request.resource.data.userId == request.auth.uid && request.resource.data.status == 'PENDING';
+-      allow update, delete: if false;
++    // Fail closed for every other collection, especially unknown sensitive
++    // payment, admin, automation, or revenue paths.
++    match /{document=**} {
++      allow read, write: if false;
+     }
+   }
+ }
+diff --git a/next.config.ts b/next.config.ts
+index e9ffa30..cf303f5 100644
+--- a/next.config.ts
++++ b/next.config.ts
+@@ -1,7 +1,70 @@
+ import type { NextConfig } from "next";
+ 
+ const nextConfig: NextConfig = {
+-  /* config options here */
++  images: {
++    remotePatterns: [
++      {
++        protocol: 'https',
++        hostname: 'lh3.googleusercontent.com',
++        pathname: '/**',
++      },
++      {
++        protocol: 'https',
++        hostname: 'picsum.photos',
++        pathname: '/**',
++      },
++      {
++        protocol: 'https',
++        hostname: 'firebasestorage.googleapis.com',
++        pathname: '/**',
++      },
++      {
++        protocol: 'https',
++        hostname: '*.firebasestorage.app',
++        pathname: '/**',
++      },
++      {
++        protocol: 'https',
++        hostname: 'ui-avatars.com',
++        pathname: '/**',
++      },
++      {
++        protocol: 'https',
++        hostname: 'api.dicebear.com',
++        pathname: '/**',
++      },
++      {
++        protocol: 'https',
++        hostname: 'image.pollinations.ai',
++        pathname: '/**',
++      },
++    ],
++  },
++  async headers() {
++    return [
++      {
++        source: '/:path*',
++        headers: [
++          {
++            key: 'X-Frame-Options',
++            value: 'DENY',
++          },
++          {
++            key: 'X-Content-Type-Options',
++            value: 'nosniff',
++          },
++          {
++            key: 'Referrer-Policy',
++            value: 'origin-when-cross-origin',
++          },
++          {
++            key: 'X-DNS-Prefetch-Control',
++            value: 'on',
++          },
++        ],
++      },
++    ];
++  },
+ };
+ 
+ export default nextConfig;
+diff --git a/package.json b/package.json
+index 01a21fd..cd4d3e2 100644
+--- a/package.json
++++ b/package.json
+@@ -12,6 +12,7 @@
+     "@google/genai": "^1.49.0",
+     "@payos/node": "^2.0.5",
+     "firebase": "^12.12.0",
++    "firebase-admin": "^13.5.0",
+     "lucide-react": "^1.8.0",
+     "motion": "^12.38.0",
+     "next": "16.2.3",
+diff --git a/src/app/api/payos/create/route.ts b/src/app/api/payos/create/route.ts
+index 68a0685..f8aabc8 100644
+--- a/src/app/api/payos/create/route.ts
++++ b/src/app/api/payos/create/route.ts
+@@ -1,28 +1,178 @@
+ import { NextResponse } from 'next/server';
+ import { payos } from '@/services/payos';
++import { getSiteUrl } from '@/lib/site';
++import { requireFirebaseUser } from '@/lib/apiAuth';
++import { adminDb, FieldValue } from '@/lib/firebaseAdmin';
++
++type PaymentPack = {
++  id: string;
++  amount: number;
++  coins: number;
++  isMonthly: boolean;
++  title: string;
++  description: string;
++  vipDays?: number;
++};
++
++const PAYMENT_PACKS: Record<string, PaymentPack> = {
++  pack0: {
++    id: 'pack0',
++    amount: 5000,
++    coins: 70,
++    isMonthly: false,
++    title: 'Goi khoi dau',
++    description: 'Nap 70 Xu',
++  },
++  pack1: {
++    id: 'pack1',
++    amount: 10000,
++    coins: 100,
++    isMonthly: false,
++    title: 'Goi 100 Xu',
++    description: 'Nap 100 Xu',
++  },
++  pack2: {
++    id: 'pack2',
++    amount: 20000,
++    coins: 220,
++    isMonthly: false,
++    title: 'Goi pho bien',
++    description: 'Nap 220 Xu',
++  },
++  pack3: {
++    id: 'pack3',
++    amount: 50000,
++    coins: 600,
++    isMonthly: false,
++    title: 'Goi 600 Xu',
++    description: 'Nap 600 Xu',
++  },
++  monthly: {
++    id: 'monthly',
++    amount: 99000,
++    coins: 1800,
++    isMonthly: true,
++    vipDays: 30,
++    title: 'Combo thang',
++    description: 'VIP thang va 1800 Xu',
++  },
++  pack4: {
++    id: 'pack4',
++    amount: 100000,
++    coins: 1300,
++    isMonthly: false,
++    title: 'Goi 1300 Xu',
++    description: 'Nap 1300 Xu',
++  },
++  pack5: {
++    id: 'pack5',
++    amount: 200000,
++    coins: 2800,
++    isMonthly: false,
++    title: 'Goi toi da',
++    description: 'Nap 2800 Xu',
++  },
++};
++
++type CreatePayOSBody = {
++  packId?: unknown;
++};
++
++function readPackId(body: CreatePayOSBody): string | null {
++  if (typeof body.packId !== 'string') return null;
++  const packId = body.packId.trim();
++  return PAYMENT_PACKS[packId] ? packId : null;
++}
++
++function createOrderCode(): number {
++  const randomPart = Math.floor(Math.random() * 1000);
++  return Date.now() * 1000 + randomPart;
++}
+ 
+ export async function POST(request: Request) {
++  const auth = await requireFirebaseUser(request);
++  if (!auth.ok) return auth.response;
++
++  let body: CreatePayOSBody;
+   try {
+-    const body = await request.json();
+-    const { orderCode, amount, description, cancelUrl, returnUrl } = body;
+-
+-    if (!orderCode || !amount) {
+-      return NextResponse.json({ error: 'Missing orderCode or amount' }, { status: 400 });
+-    }
+-
+-    const payload = {
+-      orderCode: orderCode, // Unique integer <= 9007199254740991
+-      amount: amount,
+-      description: description || 'Nap Xu WebTruyen',
+-      cancelUrl: cancelUrl || 'http://localhost:3005',
+-      returnUrl: returnUrl || 'http://localhost:3005',
+-    };
+-
+-    const paymentLinkRes = await payos.paymentRequests.create(payload);
+-
+-    return NextResponse.json(paymentLinkRes);
+-  } catch (error: any) {
+-    console.error('Lỗi tạo link PayOS:', error);
+-    return NextResponse.json({ error: error.message || 'Lỗi kết nối PayOS' }, { status: 500 });
++    body = (await request.json()) as CreatePayOSBody;
++  } catch {
++    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
++  }
++
++  const packId = readPackId(body);
++  if (!packId) {
++    return NextResponse.json({ error: 'Invalid packId' }, { status: 400 });
++  }
++
++  const pack = PAYMENT_PACKS[packId];
++  const orderCode = createOrderCode();
++  const siteUrl = getSiteUrl();
++  const returnUrl = `${siteUrl}/vip?payment=success&orderCode=${orderCode}`;
++  const cancelUrl = `${siteUrl}/vip?payment=cancelled&orderCode=${orderCode}`;
++  const orderRef = adminDb().doc(`orders/${orderCode}`);
++
++  try {
++    await orderRef.set({
++      uid: auth.user.uid,
++      email: auth.user.email || '',
++      packId: pack.id,
++      amount: pack.amount,
++      coins: pack.coins,
++      isMonthly: pack.isMonthly,
++      vipDays: pack.vipDays || 0,
++      title: pack.title,
++      description: pack.description,
++      orderCode,
++      status: 'PENDING',
++      provider: 'payos',
++      createdAt: FieldValue.serverTimestamp(),
++      updatedAt: FieldValue.serverTimestamp(),
++    });
++
++    const paymentLink = await payos.paymentRequests.create({
++      orderCode,
++      amount: pack.amount,
++      description: `T24H ${orderCode}`,
++      cancelUrl,
++      returnUrl,
++      items: [
++        {
++          name: pack.title,
++          quantity: 1,
++          price: pack.amount,
++        },
++      ],
++      buyerEmail: auth.user.email,
++    });
++
++    await orderRef.set(
++      {
++        paymentLinkId: paymentLink.paymentLinkId,
++        checkoutUrl: paymentLink.checkoutUrl,
++        qrCode: paymentLink.qrCode,
++        payosStatus: paymentLink.status,
++        updatedAt: FieldValue.serverTimestamp(),
++      },
++      { merge: true }
++    );
++
++    return NextResponse.json({
++      orderCode,
++      checkoutUrl: paymentLink.checkoutUrl,
++      qrCode: paymentLink.qrCode,
++      amount: pack.amount,
++      coins: pack.coins,
++      isMonthly: pack.isMonthly,
++    });
++  } catch {
++    await orderRef.set(
++      {
++        status: 'CREATE_FAILED',
++        updatedAt: FieldValue.serverTimestamp(),
++      },
++      { merge: true }
++    );
++    return NextResponse.json({ error: 'PayOS payment link creation failed' }, { status: 500 });
+   }
+ }
+diff --git a/src/app/api/webhooks/payos/route.ts b/src/app/api/webhooks/payos/route.ts
+index d84f48b..aee3dfb 100644
+--- a/src/app/api/webhooks/payos/route.ts
++++ b/src/app/api/webhooks/payos/route.ts
+@@ -1,72 +1,162 @@
+ import { NextResponse } from 'next/server';
++import type { Transaction as FirestoreTransaction } from 'firebase-admin/firestore';
++import { Timestamp } from 'firebase-admin/firestore';
+ import { payos } from '@/services/payos';
+-import { db } from '@/firebase-backend';
+-import { doc, getDoc, updateDoc, increment, serverTimestamp, setDoc } from 'firebase/firestore';
++import { adminDb, FieldValue } from '@/lib/firebaseAdmin';
++
++type PayOSWebhookData = {
++  orderCode: number;
++  amount: number;
++  description?: string;
++  reference?: string;
++  paymentLinkId?: string;
++  transactionDateTime?: string;
++};
++
++type PayOSWebhookPayload = Parameters<typeof payos.webhooks.verify>[0];
++
++type PayOSOrder = {
++  uid?: unknown;
++  packId?: unknown;
++  amount?: unknown;
++  coins?: unknown;
++  isMonthly?: unknown;
++  vipDays?: unknown;
++  status?: unknown;
++};
++
++function asPositiveNumber(value: unknown): number | null {
++  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null;
++  return value;
++}
++
++function addDays(date: Date, days: number): Date {
++  const next = new Date(date);
++  next.setDate(next.getDate() + days);
++  return next;
++}
+ 
+ export async function POST(request: Request) {
++  let body: unknown;
+   try {
+-    const body = await request.json();
+-    
+-    // 1. Chặn vòng lặp webhook test của PayOS
+-    if (body?.data?.orderCode === 123) {
+-      return NextResponse.json({ message: "Test Webhook: OK" });
+-    }
+-
+-    // 2. Xác thực tính toàn vẹn của Webhook (Chống giả mạo)
+-    // Sẽ throw error nếu signature không khớp với checksum key
+-    let webhookData;
+-    try {
+-      webhookData = await payos.webhooks.verify(body);
+-    } catch (e) {
+-      console.error('Lỗi mã Signature Webhook PayOS:', e);
+-      return NextResponse.json({ error: "Invalid signature" }, { status: 400 });
+-    }
+-
+-    // webhookData là dữ liệu thật của Order sau khi chuyển khoản thành công
+-    const orderCode = webhookData.orderCode;
+-    const amount = webhookData.amount;
+-    const description = webhookData.description; // Ví dụ: NAPXU ABCD
+-
+-    console.log(`[PayOS Webhook] Nhận tiền: ${amount}VND cho Mã Đơn: ${orderCode}`);
+-
+-    // Đọc thông tin Đơn Hàng trong Database để xem nó thuc về User nào
+-    const orderRef = doc(db, 'orders', String(orderCode));
+-    const orderSnap = await getDoc(orderRef);
+-
+-    if (!orderSnap.exists()) {
+-      console.error(`Không tìm thấy đơn hàng mã ${orderCode} trong Database`);
+-      return NextResponse.json({ message: "Order not found but acknowledged" }, { status: 200 });
+-    }
+-
+-    const orderData = orderSnap.data();
+-
+-    // Chống nạp tiền 2 lần cho cùng 1 đơn hàng
+-    if (orderData.status === "PAID") {
+-      return NextResponse.json({ message: "Order already paid" });
+-    }
+-
+-    // Lấy User ID
+-    const userId = orderData.uid;
+-    const coinsToAdd = orderData.coins;
+-
+-    // Cập nhật ví User
+-    const userRef = doc(db, 'users', userId);
+-    await updateDoc(userRef, {
+-      coins: increment(coinsToAdd)
+-    });
++    body = await request.json();
++  } catch {
++    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
++  }
+ 
+-    // Cập nhật trạng thái Đơn hàng thành ĐÃ THANH TOÁN
+-    await updateDoc(orderRef, {
+-      status: "PAID",
+-      paidAt: serverTimestamp(),
+-      actualAmount: amount
+-    });
++  let webhookData: PayOSWebhookData;
++  try {
++    webhookData = (await payos.webhooks.verify(body as PayOSWebhookPayload)) as PayOSWebhookData;
++  } catch {
++    return NextResponse.json({ error: 'Invalid signature' }, { status: 400 });
++  }
+ 
+-    console.log(`[PayOS Webhook] Đã cng ${coinsToAdd} Xu cho user ${userId}`);
++  const orderCode = asPositiveNumber(webhookData.orderCode);
++  const paidAmount = asPositiveNumber(webhookData.amount);
++  if (!orderCode || !paidAmount) {
++    return NextResponse.json({ error: 'Invalid webhook data' }, { status: 400 });
++  }
++
++  const db = adminDb();
++  const orderRef = db.doc(`orders/${orderCode}`);
++
++  try {
++    const result = await db.runTransaction(async (tx: FirestoreTransaction) => {
++      const orderSnap = await tx.get(orderRef);
++      if (!orderSnap.exists) {
++        return { message: 'Order not found but acknowledged' };
++      }
++
++      const order = orderSnap.data() as PayOSOrder;
++      if (order.status === 'PAID') {
++        return { message: 'Order already paid' };
++      }
++
++      const uid = typeof order.uid === 'string' ? order.uid : '';
++      const expectedAmount = asPositiveNumber(order.amount);
++      const coins = asPositiveNumber(order.coins);
++      if (!uid || !expectedAmount || !coins) {
++        tx.set(
++          orderRef,
++          {
++            status: 'PAYMENT_REJECTED',
++            rejectionReason: 'invalid_server_order',
++            actualAmount: paidAmount,
++            updatedAt: FieldValue.serverTimestamp(),
++          },
++          { merge: true }
++        );
++        return { message: 'Invalid server order data' };
++      }
++
++      if (paidAmount !== expectedAmount) {
++        tx.set(
++          orderRef,
++          {
++            status: 'PAYMENT_MISMATCH',
++            actualAmount: paidAmount,
++            expectedAmount,
++            updatedAt: FieldValue.serverTimestamp(),
++          },
++          { merge: true }
++        );
++        return { message: 'Payment amount mismatch recorded' };
++      }
++
++      if (order.status !== 'PENDING') {
++        return { message: 'Order is not pending' };
++      }
++
++      const userRef = db.doc(`users/${uid}`);
++      const transactionRef = db.doc(`transactions/payos_${orderCode}`);
++      const userUpdate: Record<string, unknown> = {
++        coins: FieldValue.increment(coins),
++        updatedAt: FieldValue.serverTimestamp(),
++      };
++
++      if (order.isMonthly === true) {
++        const vipDays = asPositiveNumber(order.vipDays) || 30;
++        userUpdate.vipPlan = 'monthly';
++        userUpdate.vipUntil = Timestamp.fromDate(addDays(new Date(), vipDays));
++      }
++
++      tx.set(userRef, userUpdate, { merge: true });
++      tx.set(
++        orderRef,
++        {
++          status: 'PAID',
++          paidAt: FieldValue.serverTimestamp(),
++          actualAmount: paidAmount,
++          paymentReference: webhookData.reference || '',
++          paymentLinkId: webhookData.paymentLinkId || '',
++          paymentDescription: webhookData.description || '',
++          updatedAt: FieldValue.serverTimestamp(),
++        },
++        { merge: true }
++      );
++      tx.set(
++        transactionRef,
++        {
++          type: order.isMonthly === true ? 'PAYOS_MONTHLY_VIP' : 'PAYOS_TOPUP',
++          provider: 'payos',
++          orderCode,
++          uid,
++          packId: typeof order.packId === 'string' ? order.packId : '',
++          amount: expectedAmount,
++          coins,
++          isMonthly: order.isMonthly === true,
++          status: 'PAID',
++          reference: webhookData.reference || '',
++          createdAt: FieldValue.serverTimestamp(),
++        },
++        { merge: false }
++      );
++
++      return { message: 'Payment credited' };
++    });
+ 
+-    return NextResponse.json({ message: "Giao dịch thành công" });
+-  } catch (error: any) {
+-    console.error('[PayOS Webhook Lỗi Hệ Thống]:', error);
+-    return NextResponse.json({ error: error.message }, { status: 500 });
++    return NextResponse.json(result);
++  } catch {
++    return NextResponse.json({ error: 'PayOS webhook processing failed' }, { status: 500 });
+   }
+ }
+diff --git a/src/app/doc/[slug]/[chapter_id]/page.tsx b/src/app/doc/[slug]/[chapter_id]/page.tsx
+index b66d137..8220b15 100644
+--- a/src/app/doc/[slug]/[chapter_id]/page.tsx
++++ b/src/app/doc/[slug]/[chapter_id]/page.tsx
+@@ -1,39 +1,115 @@
+-import { getDoc, doc, collection, query, getDocs, orderBy } from 'firebase/firestore';
+-import { db } from '@/firebase-backend';
++/**
++ * Server component for a single chapter page.
++ *
++ * Uses Firebase Admin SDK (HTTP REST) instead of the client SDK (gRPC)
++ * because gRPC streams don't reliably initialize inside Vercel's
++ * short-lived serverless functions. See /truyen/[slug]/page.tsx for the
++ * full rationale.
++ */
+ import ReaderClient from './ReaderClient';
++import { absoluteUrl, SITE_NAME } from '@/lib/site';
++import { ChapterJsonLd } from '@/components/JsonLd';
++import { adminDb } from '@/lib/firebaseAdmin';
++import { serializeFirestore } from '@/lib/serialize';
++import { Chapter, Novel } from '@/types';
++import { db as clientDb } from '@/firebase-backend';
++import { collection, doc, getDoc, getDocs, orderBy, query } from 'firebase/firestore';
++import { NOVELS } from '@/constants';
++import { fetchFirestoreRestCollection, fetchFirestoreRestDocument } from '@/lib/firestoreRest';
++
++export const dynamic = 'force-dynamic';
++export const revalidate = 60;
++
++type SerializedNovel = Novel & { chapters: Chapter[] };
++type NovelAndChapter = { novel: SerializedNovel; chapter: Chapter | null };
++
++async function fetchNovelAndChapter(slug: string, chapterId: string) {
++  try {
++    const db = adminDb();
++    const novelSnap = await db.collection('novels').doc(slug).get();
++    if (!novelSnap.exists) return null;
++
++    const chapterSnap = await db.doc(`novels/${slug}/chapters/${chapterId}`).get();
++    if (!chapterSnap.exists) {
++      return {
++        novel: serializeFirestore({ id: novelSnap.id, ...novelSnap.data(), chapters: [] }) as SerializedNovel,
++        chapter: null,
++      } satisfies NovelAndChapter;
++    }
++
++    const chaptersSnap = await db
++      .collection(`novels/${slug}/chapters`)
++      .orderBy('chapterNumber', 'asc')
++      .get();
++    const chaptersData = chaptersSnap.docs.map((d: { id: string; data: () => Record<string, unknown> }) => ({ id: d.id, ...d.data() }));
++
++    return {
++      novel: serializeFirestore({ id: novelSnap.id, ...novelSnap.data(), chapters: chaptersData }) as SerializedNovel,
++      chapter: serializeFirestore({ id: chapterSnap.id, ...chapterSnap.data() }) as Chapter,
++    } satisfies NovelAndChapter;
++  } catch (error) {
++    console.warn('Admin SDK chapter read failed; falling back to client SDK.', error);
++  }
++
++  try {
++    const novelSnap = await getDoc(doc(clientDb, 'novels', slug));
++    if (!novelSnap.exists()) return null;
++
++    const chaptersSnap = await getDocs(query(collection(clientDb, `novels/${slug}/chapters`), orderBy('chapterNumber', 'asc')));
++    const chaptersData = chaptersSnap.docs.map((d) => serializeFirestore({ id: d.id, ...d.data() }) as Chapter);
++    const chapter = chaptersData.find((c) => c.id === chapterId) || null;
++
++    return {
++      novel: serializeFirestore({ id: novelSnap.id, ...novelSnap.data(), chapters: chaptersData }) as SerializedNovel,
++      chapter,
++    } satisfies NovelAndChapter;
++  } catch (error) {
++    console.warn('Client SDK chapter read fallback failed.', error);
++  }
++
++  try {
++    const novelDoc = await fetchFirestoreRestDocument(`novels/${slug}`);
++    if (novelDoc) {
++      const chaptersData = (await fetchFirestoreRestCollection(`novels/${slug}/chapters`) as unknown as Chapter[])
++        .sort((a, b) => (a.chapterNumber || 0) - (b.chapterNumber || 0));
++      const chapter = chaptersData.find((c) => c.id === chapterId) || null;
++
++      return {
++        novel: serializeFirestore({ ...novelDoc, chapters: chaptersData }) as SerializedNovel,
++        chapter: chapter ? serializeFirestore(chapter) as Chapter : null,
++      } satisfies NovelAndChapter;
++    }
++  } catch (error) {
++    console.warn('REST chapter read fallback failed.', error);
++  }
++
++  const localNovel = NOVELS.find((novel) => novel.id === slug);
++  if (!localNovel) return null;
++  const localChapter = localNovel.chapters.find((chapter) => chapter.id === chapterId) || null;
++  return { novel: localNovel as SerializedNovel, chapter: localChapter } satisfies NovelAndChapter;
++}
+ 
+ export async function generateMetadata({ params }: { params: Promise<{ slug: string, chapter_id: string }> }) {
+   const { slug, chapter_id } = await params;
+-  const novelRef = doc(db, 'novels', slug);
+-  const novelSnap = await getDoc(novelRef);
+-  const chapterRef = doc(db, `novels/${slug}/chapters`, chapter_id);
+-  const chapterSnap = await getDoc(chapterRef);
+-  
+-  if (!chapterSnap.exists() || !novelSnap.exists()) return { title: 'Đọc truyện' };
+-  
+-  const novelData = novelSnap.data();
+-  const chapterData = chapterSnap.data();
+-  const coverUrl = novelData.coverUrl || `https://picsum.photos/seed/novel-${slug}/400/600`;
+-
+-  const pageTitle = `Chương ${chapterData.chapterNumber}: ${chapterData.title} - ${novelData.title}`;
+-  const pageDesc = `Đọc Chương ${chapterData.chapterNumber} của bộ truyện ${novelData.title} trên Truyen24h.`;
++  const result = await fetchNovelAndChapter(slug, chapter_id);
++  if (!result || !result.chapter) return { title: 'Đọc truyện' };
++
++  const { novel, chapter } = result;
++  const coverUrl = novel.coverUrl || `https://picsum.photos/seed/novel-${slug}/400/600`;
++  const pageTitle = `Chương ${chapter.chapterNumber}: ${chapter.title} - ${novel.title}`;
++  const pageDesc = `Đọc Chương ${chapter.chapterNumber} của bộ truyện ${novel.title} trên Truyen24h.`;
++  const canonical = absoluteUrl(`/doc/${slug}/${chapter_id}`);
+ 
+   return {
+     title: pageTitle,
+     description: pageDesc,
++    alternates: { canonical },
+     openGraph: {
+       title: pageTitle,
+       description: pageDesc,
+-      url: `https://truyen24h.com/doc/${slug}/${chapter_id}`,
+-      siteName: 'Truyen24h',
+-      images: [
+-        {
+-          url: coverUrl,
+-          width: 800,
+-          height: 600,
+-          alt: `Bìa truyện ${novelData.title}`,
+-        },
+-      ],
++      url: canonical,
++      siteName: SITE_NAME,
++      images: [{ url: coverUrl, width: 800, height: 600, alt: `Bìa truyện ${novel.title}` }],
+       locale: 'vi_VN',
+       type: 'article',
+     },
+@@ -48,25 +124,17 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
+ 
+ export default async function ChapterPage({ params }: { params: Promise<{ slug: string, chapter_id: string }> }) {
+   const { slug, chapter_id } = await params;
+-  const novelRef = doc(db, 'novels', slug);
+-  const novelSnap = await getDoc(novelRef);
+-  
+-  const chapterRef = doc(db, `novels/${slug}/chapters`, chapter_id);
+-  const chapterSnap = await getDoc(chapterRef);
++  const result = await fetchNovelAndChapter(slug, chapter_id);
+ 
+-  if (!novelSnap.exists() || !chapterSnap.exists()) {
++  if (!result || !result.chapter) {
+     return <div className="p-20 text-center text-white">Chương nội dung không tồn tại hoặc đã phân quyền.</div>;
+   }
+ 
+-  const chaptersRef = collection(db, `novels/${slug}/chapters`);
+-  const q = query(chaptersRef, orderBy('chapterNumber', 'asc'));
+-  const chaptersSnap = await getDocs(q);
+-  const chaptersData = chaptersSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+-
+-  const novelData = { id: novelSnap.id, ...novelSnap.data(), chapters: chaptersData } as any;
+-  const chapterData = { id: chapterSnap.id, ...chapterSnap.data() } as any;
+-
++  const { novel, chapter } = result;
+   return (
+-    <ReaderClient novel={novelData} chapter={chapterData} />
++    <>
++      <ChapterJsonLd novel={novel} chapter={chapter} />
++      <ReaderClient novel={novel} chapter={chapter} />
++    </>
+   );
+ }
+diff --git a/src/app/globals.css b/src/app/globals.css
+index d9d81d3..c75bae7 100644
+--- a/src/app/globals.css
++++ b/src/app/globals.css
+@@ -4,6 +4,7 @@
+ @theme {
+   --font-display: "Newsreader", serif;
+   --font-ui: "Outfit", sans-serif;
++  --font-reading: "Times New Roman", "Newsreader", "Georgia", serif;
+   
+   --color-primary: var(--primary);
+   --color-background-light: var(--background);
+@@ -41,7 +42,25 @@
+ 
+ @layer base {
+   body {
+-    @apply bg-background-light text-text-main font-ui antialiased transition-colors duration-300;
++    @apply bg-background-light text-text-main font-reading antialiased transition-colors duration-300;
++  }
++  
++  /* UI elements (buttons, nav, labels, badges) dùng Outfit cho hiện đại */
++  button, a, nav, label, select, input, 
++  [class*="tracking-"], [class*="uppercase"] {
++    font-family: "Outfit", sans-serif;
++  }
++  
++  /* Headings dùng Newsreader cho sang trọng */
++  h1, h2, h3, h4, h5, h6 {
++    font-family: "Newsreader", serif;
++  }
++  
++  /* Nội dung đọc truyện — Times New Roman cho dễ đọc nhất */
++  p, article, .prose, .chapter-content, .novel-description {
++    font-family: "Times New Roman", "Newsreader", "Georgia", serif;
++    line-height: 1.85;
++    letter-spacing: 0.01em;
+   }
+ }
+ 
+diff --git a/src/app/layout.tsx b/src/app/layout.tsx
+index e4685ba..1d51068 100644
+--- a/src/app/layout.tsx
++++ b/src/app/layout.tsx
+@@ -13,16 +13,56 @@ const geistMono = Geist_Mono({
+ });
+ 
+ export const metadata: Metadata = {
+-  title: "Truyen24h.vn - Thế Giới Truyện Đọc",
+-  description: "Bản quyền truyện online.",
++  title: {
++    default: "Truyen24h.vn - Thế Giới Truyện Đọc",
++    template: "%s | Truyen24h.vn",
++  },
++  description: "Nền tảng đọc truyện online và sáng tác truyện hàng đầu Việt Nam. Đọc truyện miễn phí, truyện VIP bản quyền, ngôn tình, tiên hiệp, đam mỹ, trọng sinh với trải nghiệm vượt trội và AI tóm tắt thông minh.",
++  keywords: ["đọc truyện online", "truyen24h", "truyện hay", "ngôn tình", "tiên hiệp", "đam mỹ", "trọng sinh", "truyện VIP", "sáng tác truyện"],
++  authors: [{ name: "Truyen24h.vn" }],
++  creator: "Truyen24h.vn",
++  publisher: "Truyen24h.vn",
+   icons: {
+     icon: '/logo.jpg',
+     apple: '/logo.jpg',
+   },
++  metadataBase: new URL('https://truyen24h.vn'),
++  openGraph: {
++    type: 'website',
++    locale: 'vi_VN',
++    url: 'https://truyen24h.vn',
++    siteName: 'Truyen24h.vn',
++    title: 'Truyen24h.vn - Thế Giới Truyện Đọc',
++    description: 'Nền tảng đọc truyện online và sáng tác truyện hàng đầu Việt Nam.',
++    images: [
++      {
++        url: '/logo.jpg',
++        width: 512,
++        height: 512,
++        alt: 'Truyen24h.vn Logo',
++      }
++    ],
++  },
++  twitter: {
++    card: 'summary_large_image',
++    title: 'Truyen24h.vn - Thế Giới Truyện Đọc',
++    description: 'Nền tảng đọc truyện online phong phú.',
++  },
++  robots: {
++    index: true,
++    follow: true,
++    googleBot: {
++      index: true,
++      follow: true,
++    },
++  },
+ };
+ 
+ import CommunityWidget from "@/components/CommunityWidget";
+ import Footer from "@/components/Footer";
++import { AuthProvider } from "@/contexts/AuthContext";
++import { OrganizationJsonLd, WebSiteJsonLd } from "@/components/JsonLd";
++import Analytics from "@/components/Analytics";
+ 
+ export default function RootLayout({
+   children,
+@@ -31,7 +71,7 @@ export default function RootLayout({
+ }>) {
+   return (
+     <html
+-      lang="en"
++      lang="vi"
+       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+       suppressHydrationWarning
+     >
+@@ -52,11 +92,16 @@ export default function RootLayout({
+             `,
+           }}
+         />
++        <OrganizationJsonLd />
++        <WebSiteJsonLd />
+       </head>
+       <body className="min-h-full flex flex-col relative" suppressHydrationWarning>
+-        {children}
+-        <Footer />
+-        <CommunityWidget />
++        <AuthProvider>
++          {children}
++          <Footer />
++          <CommunityWidget />
++          <Analytics />
++        </AuthProvider>
+       </body>
+     </html>
+   );
+diff --git a/src/app/page.tsx b/src/app/page.tsx
+index 046fdcb..a328107 100644
+--- a/src/app/page.tsx
++++ b/src/app/page.tsx
+@@ -1,19 +1,21 @@
+ import TopNavBarClientWrapper from '@/components/TopNavBarClientWrapper';
+ import DiscoverClient from './DiscoverClient';
++import { getSiteUrl, SITE_NAME } from '@/lib/site';
+ 
+ export const metadata = {
+-  title: 'Truyen24h - Đọc Truyện VIP, Nền Tảng Sáng Tác Hiện Đại',
++  title: 'Truyen24h.vn - Đọc Truyện VIP, Nền Tảng Sáng Tác Hiện Đại',
+   description: 'Nền tảng đọc truyện online và sáng tác truyện Việt Nam. Đọc truyện miễn phí, truyện VIP bản quyền nhanh nhất, chất lượng tốt nhất với trải nghiệm vượt trội.',
++  alternates: { canonical: getSiteUrl() },
+   openGraph: {
+-    title: 'Truyen24h - Đọc Truyện VIP',
++    title: 'Truyen24h.vn - Đọc Truyện VIP',
+     description: 'Nền tảng đọc truyện, tiểu thuyết online chất lượng cao.',
+-    url: 'https://truyen24h.com',
+-    siteName: 'Truyen24h',
++    url: getSiteUrl(),
++    siteName: SITE_NAME,
+     images: [
+       {
+-        url: 'https://picsum.photos/seed/truyen24h/1200/630', // temporary placeholder banner
+-        width: 1200,
+-        height: 630,
++        url: '/logo.jpg',
++        width: 512,
++        height: 512,
+         alt: 'Truyen24h Banner',
+       },
+     ],
+diff --git a/src/app/sitemap.ts b/src/app/sitemap.ts
+index 637bfdc..3c9a9d7 100644
+--- a/src/app/sitemap.ts
++++ b/src/app/sitemap.ts
+@@ -1,30 +1,64 @@
++/**
++ * Sitemap — emitted on every request (Next.js calls this in a server context).
++ *
++ * Uses Firebase Admin SDK so it works reliably in Vercel serverless. The
++ * Firebase client SDK relies on long-lived gRPC streams that frequently
++ * fail to initialize inside short-lived serverless invocations.
++ */
+ import { MetadataRoute } from 'next';
+-import { collection, getDocs, query } from 'firebase/firestore';
+-import { db } from '@/firebase-backend';
++import { adminDb } from '@/lib/firebaseAdmin';
++import { getSiteUrl } from '@/lib/site';
++
++export const dynamic = 'force-dynamic';
+ 
+-// Sitemap sẽ được sinh lúc Deploy (build tĩnh) hoặc SSR
+ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
+-  const baseUrl = 'https://truyen24h.vn'; // Cập nhật tên miền mới của anh
++  const baseUrl = getSiteUrl();
+ 
+-  // Lấy danh sách ID toàn bộ truyện
+-  const novelsCol = collection(db, 'novels');
+-  const novelDocs = await getDocs(query(novelsCol));
++  const staticPages: MetadataRoute.Sitemap = [
++    { url: baseUrl, lastModified: new Date(), changeFrequency: 'always', priority: 1.0 },
++    { url: `${baseUrl}/bang-xep-hang`, lastModified: new Date(), changeFrequency: 'daily', priority: 0.7 },
++    { url: `${baseUrl}/tim-kiem`, lastModified: new Date(), changeFrequency: 'weekly', priority: 0.5 },
++    { url: `${baseUrl}/tac-gia`, lastModified: new Date(), changeFrequency: 'monthly', priority: 0.6 },
++    { url: `${baseUrl}/gioi-thieu`, lastModified: new Date(), changeFrequency: 'monthly', priority: 0.5 },
++    { url: `${baseUrl}/blog`, lastModified: new Date(), changeFrequency: 'daily', priority: 0.7 },
++    { url: `${baseUrl}/vip`, lastModified: new Date(), changeFrequency: 'weekly', priority: 0.6 },
++    { url: `${baseUrl}/chinh-sach-bao-mat`, lastModified: new Date(), changeFrequency: 'yearly', priority: 0.3 },
++    { url: `${baseUrl}/dieu-khoan-su-dung`, lastModified: new Date(), changeFrequency: 'yearly', priority: 0.3 },
++  ];
+ 
+-  const novelUrls: MetadataRoute.Sitemap = novelDocs.docs.map((doc) => ({
+-    url: `${baseUrl}/truyen/${doc.id}`,
+-    lastModified: new Date(doc.data().updatedAt?.toMillis() || Date.now()),
+-    changeFrequency: 'daily',
+-    priority: 0.8,
+-  }));
++  try {
++    const snap = await adminDb().collection('novels').get();
++    const novelUrls: MetadataRoute.Sitemap = snap.docs.map((d: any) => {
++      const data = d.data() as any;
++      const ms = data.updatedAt?.toMillis?.() ?? Date.now();
++      return {
++        url: `${baseUrl}/truyen/${d.id}`,
++        lastModified: new Date(ms),
++        changeFrequency: 'daily',
++        priority: 0.8,
++      };
++    });
++    // Blog posts
++    let blogUrls: MetadataRoute.Sitemap = [];
++    try {
++      const blogSnap = await adminDb().collection('blog_posts').get();
++      blogUrls = blogSnap.docs.map((d: any) => {
++        const data = d.data() as any;
++        const ms = data.updatedAt?.toMillis?.() ?? data.createdAt?.toMillis?.() ?? Date.now();
++        return {
++          url: `${baseUrl}/blog/${d.id}`,
++          lastModified: new Date(ms),
++          changeFrequency: 'weekly' as const,
++          priority: 0.7,
++        };
++      });
++    } catch {
++      // Blog collection might not exist yet — that's fine.
++    }
+ 
+-  // Thêm trang chủ và các trang tĩnh
+-  return [
+-    {
+-      url: `${baseUrl}`,
+-      lastModified: new Date(),
+-      changeFrequency: 'always',
+-      priority: 1.0,
+-    },
+-    ...novelUrls,
+-  ];
++    return [...staticPages, ...novelUrls, ...blogUrls];
++  } catch (err) {
++    // Fall back to static-only if admin creds aren't configured yet.
++    return staticPages;
++  }
+ }
+diff --git a/src/app/tac-gia/page.tsx b/src/app/tac-gia/page.tsx
+index c1f6a35..f499f63 100644
+--- a/src/app/tac-gia/page.tsx
++++ b/src/app/tac-gia/page.tsx
+@@ -2,7 +2,7 @@
+ 
+ import React, { useState } from 'react';
+ import Link from 'next/link';
+-import { BookPlus, Crown, Zap, DollarSign, Rocket, ShieldCheck, ChevronRight, CheckCircle2 } from 'lucide-react';
++import { BookPlus, Crown, Zap, DollarSign, Rocket, ShieldCheck, ChevronRight, CheckCircle2, Sparkles } from 'lucide-react';
+ import TopNavBarClientWrapper from '@/components/TopNavBarClientWrapper';
+ import Footer from '@/components/Footer';
+ 
+@@ -21,7 +21,7 @@ export default function AuthorLandingPage() {
+           
+           <div className="max-w-4xl mx-auto text-center relative z-10">
+             <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-primary/10 text-primary font-black text-xs uppercase tracking-widest border border-primary/20 mb-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+-              <SparklesIcon className="size-4" /> Nền tảng Thế Hệ Mới
++              <Sparkles className="size-4" /> Nền tảng Thế Hệ Mới
+             </div>
+             
+             <h1 className="text-5xl md:text-7xl font-black font-display tracking-tighter leading-tight mb-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
+@@ -170,10 +170,3 @@ export default function AuthorLandingPage() {
+   );
+ }
+ 
+-function SparklesIcon(props: any) {
+-  return (
+-    <svg {...props} width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+-      <path d="M12 2L14.4 9.6L22 12L14.4 14.4L12 22L9.6 14.4L2 12L9.6 9.6L12 2Z" fill="currentColor" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+-    </svg>
+-  );
+-}
+diff --git a/src/app/truyen/[slug]/page.tsx b/src/app/truyen/[slug]/page.tsx
+index bddf983..b261cc3 100644
+--- a/src/app/truyen/[slug]/page.tsx
++++ b/src/app/truyen/[slug]/page.tsx
+@@ -1,41 +1,85 @@
+-import { getDoc, doc } from 'firebase/firestore';
+-import { db } from '@/firebase-backend';
++/**
++ * Server component for a single novel page.
++ *
++ * Why Admin SDK instead of the client SDK we used before:
++ *   The Firebase client SDK relies on long-lived gRPC streams. On Vercel's
++ *   short-lived serverless functions those streams often fail to handshake
++ *   in time, producing "Failed to get document because the client is offline"
++ *   errors visible in Vercel function logs. Admin SDK uses plain HTTP and
++ *   works reliably from any serverless environment.
++ *
++ *   Bonus: Admin SDK bypasses Firestore Rules, so server reads never get
++ *   accidentally throttled by stricter rules in the future.
++ */
+ import NovelDetailClient from './NovelDetailClient';
+ import TopNavBarClientWrapper from '@/components/TopNavBarClientWrapper';
++import { absoluteUrl, SITE_NAME } from '@/lib/site';
++import { NovelJsonLd } from '@/components/JsonLd';
++import { adminDb } from '@/lib/firebaseAdmin';
++import { serializeFirestore } from '@/lib/serialize';
++import { db as clientDb } from '@/firebase-backend';
++import { doc, getDoc } from 'firebase/firestore';
++import { NOVELS } from '@/constants';
++import { fetchFirestoreRestDocument } from '@/lib/firestoreRest';
++import { Novel } from '@/types';
++
++export const dynamic = 'force-dynamic';
++export const revalidate = 60; // ISR-style refresh hint, in case Next caches
++
++function asNovel(data: unknown): Novel {
++  return data as Novel;
++}
++
++async function fetchNovel(slug: string): Promise<Novel | null> {
++  try {
++    const snap = await adminDb().collection('novels').doc(slug).get();
++    if (snap.exists) return asNovel(serializeFirestore({ id: snap.id, ...snap.data() }));
++  } catch (error) {
++    console.warn('Admin SDK novel read failed; falling back to client SDK.', error);
++  }
++
++  try {
++    const snap = await getDoc(doc(clientDb, 'novels', slug));
++    if (snap.exists()) return asNovel(serializeFirestore({ id: snap.id, ...snap.data() }));
++  } catch (error) {
++    console.warn('Client SDK novel read fallback failed.', error);
++  }
++
++  try {
++    const restDoc = await fetchFirestoreRestDocument(`novels/${slug}`);
++    if (restDoc) return asNovel(serializeFirestore(restDoc));
++  } catch (error) {
++    console.warn('REST novel read fallback failed.', error);
++  }
++
++  return NOVELS.find((novel) => novel.id === slug) || null;
++}
+ 
+ export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }) {
+   const { slug } = await params;
+-  const novelRef = doc(db, 'novels', slug);
+-  const novelSnap = await getDoc(novelRef);
+-  
+-  if (!novelSnap.exists()) return { title: 'Truyện không tồn tại' };
+-  
+-  const data = novelSnap.data();
++  const data = await fetchNovel(slug);
++  if (!data) return { title: 'Truyện không tồn tại' };
++
+   const coverUrl = data.coverUrl || `https://picsum.photos/seed/novel-${slug}/400/600`;
+-  
++  const canonical = absoluteUrl(`/truyen/${slug}`);
++
+   return {
+     title: `${data.title} - Đọc Truyện VIP`,
+-    description: data.description?.slice(0, 150) + '...',
++    description: (data.description || '').slice(0, 150) + '...',
++    alternates: { canonical },
+     openGraph: {
+-      title: `${data.title} - Truyen24h`,
+-      description: data.description?.slice(0, 150) + '...',
+-      url: `https://truyen24h.com/truyen/${slug}`,
+-      siteName: 'Truyen24h',
+-      images: [
+-        {
+-          url: coverUrl,
+-          width: 800,
+-          height: 600,
+-          alt: `Bìa truyện ${data.title}`,
+-        },
+-      ],
++      title: `${data.title} - ${SITE_NAME}`,
++      description: (data.description || '').slice(0, 150) + '...',
++      url: canonical,
++      siteName: SITE_NAME,
++      images: [{ url: coverUrl, width: 800, height: 600, alt: `Bìa truyện ${data.title}` }],
+       locale: 'vi_VN',
+       type: 'article',
+     },
+     twitter: {
+       card: 'summary_large_image',
+       title: data.title,
+-      description: data.description?.slice(0, 150) + '...',
++      description: (data.description || '').slice(0, 150) + '...',
+       images: [coverUrl],
+     },
+   };
+@@ -43,18 +87,21 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
+ 
+ export default async function NovelPage({ params }: { params: Promise<{ slug: string }> }) {
+   const { slug } = await params;
+-  const novelRef = doc(db, 'novels', slug);
+-  const novelSnap = await getDoc(novelRef);
++  const novelData = await fetchNovel(slug);
+ 
+-  if (!novelSnap.exists()) {
+-    return <div className="p-20 text-center text-white">Truyện không tồn tại hoặc đã bị xóa.</div>;
++  if (!novelData) {
++    return (
++      <>
++        <TopNavBarClientWrapper />
++        <div className="p-20 text-center text-white">Truyện không tồn tại hoặc đã bị xóa.</div>
++      </>
++    );
+   }
+ 
+-  const novelData = { id: novelSnap.id, ...novelSnap.data() } as any;
+-
+   return (
+     <>
+       <TopNavBarClientWrapper />
++      <NovelJsonLd novel={novelData} />
+       <NovelDetailClient novel={novelData} />
+     </>
+   );
+diff --git a/src/app/vip/page.tsx b/src/app/vip/page.tsx
+index 5d947aa..2f720ec 100644
+--- a/src/app/vip/page.tsx
++++ b/src/app/vip/page.tsx
+@@ -3,14 +3,26 @@
+ import React, { useState, useEffect } from 'react';
+ import { Coins, ShieldCheck, QrCode, ArrowRight, Sparkles, Loader2, Zap, ArrowLeft } from 'lucide-react';
+ import { useRouter } from 'next/navigation';
+-import { db, auth } from '../../firebase';
+-import { doc, setDoc } from 'firebase/firestore';
++import { auth } from '../../firebase';
+ import { onAuthStateChanged, User } from 'firebase/auth';
+ 
++/**
++ * Xu top-up packages.
++ *
++ * Why we use a high-bonus xu pack instead of a true subscription flag:
++ * the existing PayOS webhook only knows how to credit `coins` to a user.
++ * Modelling "VIP tháng" as a fat xu bundle keeps the payment flow
++ * unchanged while still giving readers ~30 chapters of headroom.
++ *
++ * If/when we wire a `vipUntil` timestamp end-to-end, we'll switch this
++ * pack's id to "monthly" and update the webhook to set that field.
++ */
+ const PACKAGES = [
++  { id: 'pack0', vnd: 5000, coins: 60, bonus: 10, starter: true },
+   { id: 'pack1', vnd: 10000, coins: 100, bonus: 0 },
+   { id: 'pack2', vnd: 20000, coins: 200, bonus: 20, popular: true },
+   { id: 'pack3', vnd: 50000, coins: 500, bonus: 100 },
++  { id: 'monthly', vnd: 99000, coins: 1500, bonus: 300, monthly: true },
+   { id: 'pack4', vnd: 100000, coins: 1000, bonus: 300 },
+   { id: 'pack5', vnd: 200000, coins: 2000, bonus: 800, vip: true }
+ ];
+@@ -35,26 +47,15 @@ export default function VIPTopUpPage() {
+     }
+     setIsCreatingOrder(true);
+     try {
+-      const orderCode = Number(String(Date.now()).slice(-9)); 
+-      const totalCoins = selectedPack.coins + selectedPack.bonus;
+-
+-      await setDoc(doc(db, 'orders', String(orderCode)), {
+-        uid: user.uid,
+-        amount: selectedPack.vnd,
+-        coins: totalCoins,
+-        status: "PENDING",
+-        createdAt: new Date()
+-      });
+-
++      const idToken = await user.getIdToken();
+       const res = await fetch('/api/payos/create', {
+         method: 'POST',
+-        headers: { 'Content-Type': 'application/json' },
++        headers: {
++          'Content-Type': 'application/json',
++          authorization: `Bearer ${idToken}`,
++        },
+         body: JSON.stringify({
+-          orderCode,
+-          amount: selectedPack.vnd,
+-          description: `WXU ${orderCode}`, 
+-          returnUrl: window.location.origin, 
+-          cancelUrl: window.location.href,
++          packId: selectedPack.id,
+         })
+       });
+       
+@@ -65,8 +66,9 @@ export default function VIPTopUpPage() {
+       } else {
+          alert("Lỗi tạo thanh toán: " + (data.error || 'Unknown'));
+       }
+-    } catch (e: any) {
+-      alert("Lỗi kết nối PayOS: " + e.message);
++    } catch (e: unknown) {
++      const message = e instanceof Error ? e.message : 'Unknown';
++      alert("Lỗi kết nối PayOS: " + message);
+     } finally {
+       setIsCreatingOrder(false);
+     }
+@@ -112,11 +114,21 @@ export default function VIPTopUpPage() {
+                   >
+                     {isSelected && <div className="absolute inset-0 bg-gradient-to-br from-primary/10 to-transparent opacity-50 blur-2xl"></div>}
+                     
++                    {pack.starter && (
++                      <div className="absolute top-0 right-0 bg-gradient-to-l from-blue-500 to-cyan-400 text-white text-[10px] sm:text-xs font-black uppercase tracking-widest px-4 py-1.5 rounded-bl-3xl rounded-tr-3xl flex items-center gap-1.5 shadow-lg">
++                        Khởi Đầu
++                      </div>
++                    )}
+                     {pack.popular && (
+                       <div className="absolute top-0 right-0 bg-gradient-to-l from-primary to-orange-500 text-white text-[10px] sm:text-xs font-black uppercase tracking-widest px-4 py-1.5 rounded-bl-3xl rounded-tr-3xl flex items-center gap-1.5 shadow-lg">
+                         <Sparkles className="size-3" /> BEST
+                       </div>
+                     )}
++                    {pack.monthly && (
++                      <div className="absolute top-0 right-0 bg-gradient-to-l from-purple-600 to-pink-500 text-white text-[10px] sm:text-xs font-black uppercase tracking-widest px-4 py-1.5 rounded-bl-3xl rounded-tr-3xl flex items-center gap-1.5 shadow-lg">
++                        <Sparkles className="size-3" /> Combo Tháng
++                      </div>
++                    )}
+                     {pack.vip && (
+                       <div className="absolute top-0 right-0 bg-gradient-to-l from-yellow-600 to-yellow-400 text-black text-[10px] sm:text-xs font-black uppercase tracking-widest px-4 py-1.5 rounded-bl-3xl rounded-tr-3xl flex items-center gap-1.5 shadow-lg">
+                         MAX LỜI
+diff --git a/src/components/AdminClientWrapper.tsx b/src/components/AdminClientWrapper.tsx
+index fb1b507..23b7381 100644
+--- a/src/components/AdminClientWrapper.tsx
++++ b/src/components/AdminClientWrapper.tsx
+@@ -3,10 +3,41 @@ import { useState, useEffect } from 'react';
+ import { onAuthStateChanged, User } from 'firebase/auth';
+ import { auth, loginWithGoogle } from '../firebase';
+ import AdminDashboard from './AdminDashboard';
+-import { Loader2, ShieldAlert } from 'lucide-react';
++import { Loader2, ShieldAlert, Sparkles, BarChart3, Library, Wallet, BookOpen } from 'lucide-react';
++import Link from 'next/link';
+ import { useRouter } from 'next/navigation';
++import { isAdmin } from '@/lib/admin';
+ 
+-const ADMIN_EMAILS = ['phamanhtung.jp@gmail.com', 'truyen24hvnn@gmail.com'];
++const CARDS = [
++  {
++    href: '/admin/ai-studio',
++    label: 'AI Studio',
++    desc: 'Sinh & đăng truyện AI hằng ngày',
++    icon: Sparkles,
++    color: 'from-yellow-500 to-orange-500',
++  },
++  {
++    href: '/admin/revenue',
++    label: 'Doanh thu',
++    desc: 'Thống kê platform share + xu',
++    icon: BarChart3,
++    color: 'from-green-500 to-emerald-500',
++  },
++  {
++    href: '/admin/novels',
++    label: 'Quản lý truyện',
++    desc: 'List, search, toggle hot/full',
++    icon: Library,
++    color: 'from-primary to-pink-500',
++  },
++  {
++    href: '/admin/blog',
++    label: 'Blog & Review',
++    desc: 'Sinh review + listicle bằng AI',
++    icon: BookOpen,
++    color: 'from-blue-500 to-cyan-500',
++  },
++];
+ 
+ export default function AdminClientWrapper() {
+   const [user, setUser] = useState<User | null>(null);
+@@ -37,7 +68,7 @@ export default function AdminClientWrapper() {
+         </div>
+         <h2 className="text-3xl font-black uppercase tracking-tighter mb-4 text-text-main">Hệ Thống Quản Trị</h2>
+         <p className="text-muted font-medium max-w-md mx-auto mb-8">Bạn cần đăng nhập bằng tài khoản Administrator để truy cập khu vực này.</p>
+-        <button 
++        <button
+           onClick={loginWithGoogle}
+           className="px-10 py-4 bg-primary text-white rounded-full font-black text-xs uppercase tracking-widest shadow-xl shadow-primary/20 hover:opacity-90 transition-all"
+         >
+@@ -47,7 +78,7 @@ export default function AdminClientWrapper() {
+     );
+   }
+ 
+-  if (!ADMIN_EMAILS.includes(user.email || '')) {
++  if (!isAdmin(user.email)) {
+     return (
+       <div className="flex-grow flex flex-col items-center justify-center text-center p-8">
+         <div className="size-24 rounded-full bg-red-500/10 flex items-center justify-center mb-6">
+@@ -57,7 +88,7 @@ export default function AdminClientWrapper() {
+         <p className="text-muted font-medium max-w-md mx-auto mb-8">
+           Tài khoản <strong>{user.email}</strong> không có quyền truy cập trang Quản Trị.
+         </p>
+-        <button 
++        <button
+           onClick={() => router.push('/')}
+           className="px-10 py-4 bg-background-light text-text-main rounded-full font-black text-xs uppercase tracking-widest hover:bg-primary/10 hover:text-primary transition-all"
+         >
+@@ -67,5 +98,36 @@ export default function AdminClientWrapper() {
+     );
+   }
+ 
+-  return <AdminDashboard />;
++  return (
++    <div className="w-full max-w-7xl mx-auto px-4 py-8 space-y-8">
++      <div>
++        <h1 className="text-4xl font-black tracking-tight">Admin Dashboard</h1>
++        <p className="text-muted mt-1">Trung tâm vận hành Truyen24h.vn — chọn tool bên dưới hoặc xử lý rút tiền.</p>
++      </div>
++
++      <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
++        {CARDS.map((c) => (
++          <Link
++            key={c.href}
++            href={c.href}
++            className="group relative overflow-hidden rounded-2xl bg-surface border border-accent/10 p-6 hover:border-primary/40 transition-all"
++          >
++            <div className={`absolute -top-10 -right-10 w-32 h-32 bg-gradient-to-br ${c.color} opacity-20 blur-2xl rounded-full`} />
++            <c.icon className="size-8 mb-3 text-primary" />
++            <h3 className="font-black text-lg mb-1">{c.label}</h3>
++            <p className="text-xs text-muted">{c.desc}</p>
++            <div className="text-xs mt-3 text-primary font-bold opacity-0 group-hover:opacity-100 transition">Mở →</div>
++          </Link>
++        ))}
++      </div>
++
++      <section className="space-y-3">
++        <div className="flex items-center gap-2">
++          <Wallet className="size-5 text-primary" />
++          <h2 className="text-2xl font-black tracking-tight">Yêu cầu rút tiền</h2>
++        </div>
++        <AdminDashboard />
++      </section>
++    </div>
++  );
+ }
+diff --git a/src/components/AdminDashboard.tsx b/src/components/AdminDashboard.tsx
+index 3e056f8..dabe353 100644
+--- a/src/components/AdminDashboard.tsx
++++ b/src/components/AdminDashboard.tsx
+@@ -1,8 +1,8 @@
+ "use client";
+-import { useState, useEffect } from 'react';
+-import { db } from '../firebase';
+-import { collection, query, orderBy, onSnapshot, updateDoc, doc } from 'firebase/firestore';
+-import { ShieldCheck, CheckCircle2, Clock, Wallet, Search, Loader2 } from 'lucide-react';
++import { useEffect, useState } from 'react';
++import { collection, onSnapshot, orderBy, query, Timestamp } from 'firebase/firestore';
++import { CheckCircle2, Clock, Loader2, Search, ShieldCheck, Wallet } from 'lucide-react';
++import { auth, db } from '../firebase';
+ 
+ interface WithdrawRequest {
+   id: string;
+@@ -14,8 +14,18 @@ interface WithdrawRequest {
+   bankName: string;
+   accountName: string;
+   accountNumber: string;
+-  status: 'PENDING' | 'COMPLETED';
+-  createdAt: any;
++  status: 'PENDING' | 'COMPLETED' | 'REJECTED';
++  createdAt?: Timestamp | Date | { seconds?: number } | null;
++}
++
++function formatCreatedAt(value: WithdrawRequest['createdAt']): string {
++  if (!value) return 'Mới tạo';
++  if (value instanceof Date) return value.toLocaleString('vi-VN');
++  if (value instanceof Timestamp) return value.toDate().toLocaleString('vi-VN');
++  if (typeof value.seconds === 'number') {
++    return new Date(value.seconds * 1000).toLocaleString('vi-VN');
++  }
++  return 'Mới tạo';
+ }
+ 
+ export default function AdminDashboard() {
+@@ -24,11 +34,11 @@ export default function AdminDashboard() {
+   const [searchTerm, setSearchTerm] = useState('');
+ 
+   useEffect(() => {
+-    const q = query(collection(db, 'withdraw_requests'), orderBy('createdAt', 'desc'));
+-    const unsubscribe = onSnapshot(q, (snapshot) => {
+-      const data = snapshot.docs.map(doc => ({
+-        id: doc.id,
+-        ...doc.data()
++    const requestsQuery = query(collection(db, 'withdraw_requests'), orderBy('createdAt', 'desc'));
++    const unsubscribe = onSnapshot(requestsQuery, (snapshot) => {
++      const data = snapshot.docs.map((requestDoc) => ({
++        id: requestDoc.id,
++        ...requestDoc.data(),
+       })) as WithdrawRequest[];
+       setRequests(data);
+       setLoading(false);
+@@ -37,26 +47,51 @@ export default function AdminDashboard() {
+     return () => unsubscribe();
+   }, []);
+ 
+-  const handleMarkAsCompleted = async (reqId: string) => {
+-    if (!window.confirm("Xác nhận đã chuyển khoản cho tác giả này?")) return;
++  const handleMarkAsCompleted = async (requestId: string) => {
++    if (!window.confirm('Xác nhận đã chuyển khoản cho tác giả này?')) return;
++
+     try {
+-      await updateDoc(doc(db, 'withdraw_requests', reqId), {
+-        status: 'COMPLETED'
++      const currentUser = auth.currentUser;
++      if (!currentUser) {
++        alert('Vui lòng đăng nhập admin.');
++        return;
++      }
++
++      const idToken = await currentUser.getIdToken();
++      const response = await fetch('/api/admin/withdraw/review', {
++        method: 'POST',
++        headers: {
++          'Content-Type': 'application/json',
++          Authorization: `Bearer ${idToken}`,
++        },
++        body: JSON.stringify({
++          requestId,
++          status: 'COMPLETED',
++        }),
+       });
+-      alert('Đã duyệt lệnh rút tiền!');
++
++      if (!response.ok) {
++        const data = await response.json().catch(() => ({}));
++        throw new Error(data.error || 'Withdraw review failed');
++      }
++
++      alert('Đã duyệt lệnh rút tiền.');
+     } catch (error) {
+       console.error(error);
+       alert('Lỗi cập nhật trạng thái.');
+     }
+   };
+ 
+-  const filteredRequests = requests.filter(req => 
+-    req.userName.toLowerCase().includes(searchTerm.toLowerCase()) || 
+-    req.userEmail.toLowerCase().includes(searchTerm.toLowerCase()) ||
+-    (req.accountNumber || '').includes(searchTerm)
+-  );
++  const filteredRequests = requests.filter((request) => {
++    const keyword = searchTerm.toLowerCase();
++    return (
++      request.userName.toLowerCase().includes(keyword)
++      || request.userEmail.toLowerCase().includes(keyword)
++      || (request.accountNumber || '').includes(searchTerm)
++    );
++  });
+ 
+-  const pendingCount = requests.filter(r => r.status === 'PENDING').length;
++  const pendingCount = requests.filter((request) => request.status === 'PENDING').length;
+ 
+   if (loading) {
+     return (
+@@ -88,7 +123,7 @@ export default function AdminDashboard() {
+             <p className="text-4xl font-black text-text-main">{pendingCount}</p>
+           </div>
+         </div>
+-        
++
+         <div className="bg-surface p-6 rounded-[32px] border border-accent/10 shadow-xl flex items-center gap-6">
+           <div className="size-14 rounded-2xl bg-green-500/10 text-green-500 flex items-center justify-center">
+             <CheckCircle2 className="size-6" />
+@@ -116,14 +151,14 @@ export default function AdminDashboard() {
+             <h2 className="text-xl font-black text-text-main uppercase tracking-widest">Danh sách Yêu cầu Rút tiền</h2>
+             <p className="text-sm text-muted">Xử lý các yêu cầu chuyển đổi doanh thu của tác giả.</p>
+           </div>
+-          
++
+           <div className="relative w-full md:w-80">
+             <Search className="absolute left-4 top-1/2 -translate-y-1/2 size-5 text-muted" />
+-            <input 
+-              type="text" 
+-              placeholder="Tìm tên, email, STK..." 
++            <input
++              type="text"
++              placeholder="Tìm tên, email, STK..."
+               value={searchTerm}
+-              onChange={e => setSearchTerm(e.target.value)}
++              onChange={(event) => setSearchTerm(event.target.value)}
+               className="w-full h-12 pl-12 pr-6 bg-background-light rounded-full border-none outline-none font-bold text-text-main focus:ring-2 focus:ring-primary/20 transition-all text-sm"
+             />
+           </div>
+@@ -135,40 +170,40 @@ export default function AdminDashboard() {
+               <tr className="bg-background-light text-[10px] uppercase tracking-widest text-muted border-b border-accent/10">
+                 <th className="px-6 py-4 font-black">Thời gian</th>
+                 <th className="px-6 py-4 font-black">Tác giả</th>
+-                <th className="px-6 py-4 font-black text-right">Số VĐN / Xu</th>
++                <th className="px-6 py-4 font-black text-right">Số VND / Xu</th>
+                 <th className="px-6 py-4 font-black text-center">Ngân hàng</th>
+-                <th className="px-6 py-4 font-black">STK & CTK</th>
++                <th className="px-6 py-4 font-black">STK và CTK</th>
+                 <th className="px-6 py-4 font-black text-center">Trạng thái</th>
+                 <th className="px-6 py-4 font-black text-center">Hành động</th>
+               </tr>
+             </thead>
+             <tbody className="divide-y divide-accent/5">
+-              {filteredRequests.map(req => (
+-                <tr key={req.id} className="hover:bg-primary/5 transition-colors group">
++              {filteredRequests.map((request) => (
++                <tr key={request.id} className="hover:bg-primary/5 transition-colors group">
+                   <td className="px-6 py-4">
+                     <span className="text-xs font-bold text-muted">
+-                      {req.createdAt ? new Date(req.createdAt.seconds * 1000).toLocaleString('vi-VN') : 'Mới tạo'}
++                      {formatCreatedAt(request.createdAt)}
+                     </span>
+                   </td>
+                   <td className="px-6 py-4">
+-                    <p className="text-sm font-black text-text-main">{req.userName}</p>
+-                    <p className="text-[10px] text-muted">{req.userEmail}</p>
++                    <p className="text-sm font-black text-text-main">{request.userName}</p>
++                    <p className="text-[10px] text-muted">{request.userEmail}</p>
+                   </td>
+                   <td className="px-6 py-4 text-right">
+-                    <p className="text-lg font-black text-primary tracking-tighter">{req.amountVND.toLocaleString()} đ</p>
+-                    <p className="text-[10px] font-bold text-muted">{req.amountXu.toLocaleString()} Xu</p>
++                    <p className="text-lg font-black text-primary tracking-tighter">{request.amountVND.toLocaleString()} đ</p>
++                    <p className="text-[10px] font-bold text-muted">{request.amountXu.toLocaleString()} Xu</p>
+                   </td>
+                   <td className="px-6 py-4 text-center">
+                     <span className="px-3 py-1 bg-background-light rounded-lg text-xs font-bold text-text-main">
+-                      {req.bankName || 'Chưa cập nhật'}
++                      {request.bankName || 'Chưa cập nhật'}
+                     </span>
+                   </td>
+                   <td className="px-6 py-4">
+-                    <p className="text-base font-black text-text-main tracking-widest">{req.accountNumber || '?'}</p>
+-                    <p className="text-xs font-bold text-muted uppercase">{req.accountName || 'CHƯA CẬP NHẬT'}</p>
++                    <p className="text-base font-black text-text-main tracking-widest">{request.accountNumber || '?'}</p>
++                    <p className="text-xs font-bold text-muted uppercase">{request.accountName || 'CHƯA CẬP NHẬT'}</p>
+                   </td>
+                   <td className="px-6 py-4 text-center">
+-                    {req.status === 'COMPLETED' ? (
++                    {request.status === 'COMPLETED' ? (
+                       <span className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-widest text-green-500 bg-green-500/10 px-3 py-1 rounded-full">
+                         <CheckCircle2 className="size-3" /> Đã duyệt
+                       </span>
+@@ -179,9 +214,9 @@ export default function AdminDashboard() {
+                     )}
+                   </td>
+                   <td className="px-6 py-4 text-center">
+-                    {req.status === 'PENDING' && (
+-                      <button 
+-                        onClick={() => handleMarkAsCompleted(req.id)}
++                    {request.status === 'PENDING' && (
++                      <button
++                        onClick={() => handleMarkAsCompleted(request.id)}
+                         className="px-4 py-2 bg-primary text-white text-xs font-black uppercase tracking-widest rounded-xl hover:opacity-90 transition-all opacity-0 group-hover:opacity-100"
+                       >
+                         Đã chuyển
+diff --git a/src/components/AutoBotImport.tsx b/src/components/AutoBotImport.tsx
+index 326c719..45010ac 100644
+--- a/src/components/AutoBotImport.tsx
++++ b/src/components/AutoBotImport.tsx
+@@ -82,58 +82,64 @@ export default function AutoBotImport({ user, novels, onClose }: AutoBotImportPr
+         throw new Error("Không nhận diện được Chapter nào! Đảm bảo cấu trúc file CÓ chữ 'Chương 1' ở đầu dòng và mỗi chương dài hơn 300 ký tự.");
+       }
+ 
+-      for (let i = 0; i < chapterChunks.length; i++) {
+-        let chunk = chapterChunks[i].trim();
+-        // Lấy đoạn đầu tiên khống chế trong 200 kí tự hoặc dòng đầu tiên làm Title
+-        let firstNewlineIdx = chunk.indexOf('\n');
+-        if (firstNewlineIdx === -1 || firstNewlineIdx > 200) {
+-            firstNewlineIdx = Math.min(chunk.length, 100);
+-        }
+-        
+-        let titleLine = chunk.slice(0, firstNewlineIdx).trim();
+-        let contentBody = chunk.slice(firstNewlineIdx).trim();
++      // Upload song song 5 chapters 1 lúc (nhanh hơn 5x)
++      const BATCH_SIZE = needTranslation ? 1 : 5;
++      
++      for (let i = 0; i < chapterChunks.length; i += BATCH_SIZE) {
++        const batch = chapterChunks.slice(i, i + BATCH_SIZE);
+         
+-        let finalTitle = titleLine;
+-        let finalContent = contentBody;
++        const promises = batch.map(async (chunk, batchIdx) => {
++          const chapterIndex = i + batchIdx;
++          let rawChunk = chunk.trim();
++          
++          // Lấy title từ dòng đầu
++          let firstNewlineIdx = rawChunk.indexOf('\n');
++          if (firstNewlineIdx === -1 || firstNewlineIdx > 200) {
++            firstNewlineIdx = Math.min(rawChunk.length, 100);
++          }
++          
++          let finalTitle = rawChunk.slice(0, firstNewlineIdx).trim();
++          let finalContent = rawChunk.slice(firstNewlineIdx).trim();
+ 
+-        if (needTranslation) {
+-          addLog(`🤖 [AI] Đang dịch chương ${i + 1}/${chapterChunks.length}...`);
+-          try {
+-             const translatedCh = await runGeminiTranslation(chunk);
+-             const lines = translatedCh.split('\n');
+-             finalTitle = lines[0].trim();
+-             finalContent = lines.slice(1).join('\n').trim();
+-             addLog(`✅ Dịch đoạn ${i + 1} hoàn tất!`);
+-          } catch (e: any) {
+-             addLog(`❌ Lỗi AI ở chương ${i+1}: ${e.message}`);
+-             finalContent = chunk; // Fallback to raw
++          if (needTranslation) {
++            addLog(`🤖 [AI] Đang dịch chương ${chapterIndex + 1}/${chapterChunks.length}...`);
++            try {
++              const translatedCh = await runGeminiTranslation(rawChunk);
++              const lines = translatedCh.split('\n');
++              finalTitle = lines[0].trim();
++              finalContent = lines.slice(1).join('\n').trim();
++              addLog(`✅ Dịch đoạn ${chapterIndex + 1} hoàn tất!`);
++            } catch (e: any) {
++              addLog(`❌ Lỗi AI ở chương ${chapterIndex + 1}: ${e.message}`);
++              finalContent = rawChunk;
++            }
+           }
+-        }
+ 
+-        // Lọc title rác
+-        if (finalTitle.length > 100) finalTitle = `Chương ${i+1}`;
++          if (finalTitle.length > 100) finalTitle = `Chương ${chapterIndex + 1}`;
+ 
+-        // Bơm lên Firestore
+-        addLog(`⬆️ Đẩy dữ liệu Chương ${i + 1} lên máy chủ Firebase...`);
+-        const novelRef = doc(db, 'novels', selectedNovelId);
+-        const chapterRef = doc(collection(novelRef, 'chapters'));
+-        
+-        const isChapterVip = vipThreshold > 0 && (i + 1) >= vipThreshold;
++          addLog(`⬆️ Đẩy Chương ${chapterIndex + 1} lên Firebase...`);
++          const novelRef = doc(db, 'novels', selectedNovelId);
++          const chapterRef = doc(collection(novelRef, 'chapters'));
++          
++          const isChapterVip = vipThreshold > 0 && (chapterIndex + 1) >= vipThreshold;
+ 
+-        await setDoc(chapterRef, {
+-          id: chapterRef.id,
+-          title: finalTitle,
+-          content: finalContent,
+-          chapterNumber: i + 1,
+-          publishDate: new Date().toISOString(),
+-          isVip: isChapterVip,
+-          price: isChapterVip ? vipPrice : 0,
++          await setDoc(chapterRef, {
++            id: chapterRef.id,
++            title: finalTitle,
++            content: finalContent,
++            chapterNumber: chapterIndex + 1,
++            publishDate: new Date().toISOString(),
++            isVip: isChapterVip,
++            price: isChapterVip ? vipPrice : 0,
++          });
++          
++          setProgress(prev => prev + 1);
+         });
++
++        await Promise.all(promises);
+         
+-        setProgress(i + 1);
+-        
+-        // Thở xíu để ko chết API
+-        if (needTranslation) await new Promise(r => setTimeout(r, 2000));
++        // Delay nhẹ khi dịch AI
++        if (needTranslation) await new Promise(r => setTimeout(r, 500));
+       }
+ 
+       addLog(`🎉 HOÀN TẤT TẢI LÊN TOÀN BỘ ${chapterChunks.length} CHƯƠNG!`);
+diff --git a/src/components/BookshelfView.tsx b/src/components/BookshelfView.tsx
+index 1b6472d..f4ab1aa 100644
+--- a/src/components/BookshelfView.tsx
++++ b/src/components/BookshelfView.tsx
+@@ -3,7 +3,7 @@ import { Novel, UserProfile } from '../types';
+ import React, { useState, useEffect } from 'react';
+ import { User } from 'firebase/auth';
+ import { db, handleFirestoreError, OperationType } from '../firebase';
+-import { collection, query, onSnapshot, deleteDoc, doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
++import { collection, query, onSnapshot, doc, getDoc } from 'firebase/firestore';
+ import { getDailyGreeting } from '../services/geminiService';
+ 
+ interface BookshelfViewProps {
+@@ -63,22 +63,25 @@ export default function BookshelfView({ onNovelSelect, user, onLogin }: Bookshel
+ 
+   const handleCheckIn = async () => {
+     if (!user || hasCheckedIn) return;
+-    const path = `users/${user.uid}/profile/stats`;
+     try {
+-      const today = new Date();
+-      const newStreak = checkInStreak + 1;
+-      
+-      await setDoc(doc(db, path), {
+-        lastCheckIn: serverTimestamp(),
+-        streak: newStreak,
+-        points: (newStreak * 10) + 50 // Example points
+-      }, { merge: true });
+-      
++      const idToken = await user.getIdToken();
++      const res = await fetch('/api/checkin/claim', {
++        method: 'POST',
++        headers: {
++          'content-type': 'application/json',
++          authorization: `Bearer ${idToken}`,
++        },
++        body: JSON.stringify({})
++      });
++      const data = await res.json().catch(() => ({}));
++      if (!res.ok) throw new Error(data.error || 'Check-in failed');
++
+       setHasCheckedIn(true);
+-      setCheckInStreak(newStreak);
++      setCheckInStreak(Number(data.streak || checkInStreak + 1));
+       setShowCheckInSuccess(true);
+     } catch (error) {
+-      handleFirestoreError(error, OperationType.WRITE, path);
++      console.error("Check-in error:", error);
++      alert('Không thể điểm danh lúc này. Vui lòng thử lại sau.');
+     }
+   };
+ 
+@@ -131,12 +134,25 @@ export default function BookshelfView({ onNovelSelect, user, onLogin }: Bookshel
+ 
+   const confirmDelete = async () => {
+     if (!user || !novelToDelete) return;
+-    const path = `users/${user.uid}/bookshelf/${novelToDelete}`;
+     try {
+-      await deleteDoc(doc(db, path));
++      const idToken = await user.getIdToken();
++      const res = await fetch('/api/bookmark/toggle', {
++        method: 'POST',
++        headers: {
++          'content-type': 'application/json',
++          authorization: `Bearer ${idToken}`,
++        },
++        body: JSON.stringify({
++          action: 'remove',
++          novelId: novelToDelete,
++        }),
++      });
++      const data = await res.json().catch(() => ({}));
++      if (!res.ok) throw new Error(data.error || 'Bookmark delete failed');
+       setNovelToDelete(null);
+     } catch (error) {
+-      handleFirestoreError(error, OperationType.DELETE, path);
++      console.error(error);
++      alert('Không thể xóa truyện khỏi tủ sách lúc này.');
+     }
+   };
+ 
+@@ -236,7 +252,7 @@ export default function BookshelfView({ onNovelSelect, user, onLogin }: Bookshel
+               <h2 className="text-2xl font-black text-text-main tracking-tight mb-2">
+                 Chào mừng trở lại, <span className="text-primary">{user?.displayName}</span>!
+               </h2>
+-              <p className="text-muted font-medium italic">"{greeting}"</p>
++              <p className="text-muted font-medium italic">&quot;{greeting}&quot;</p>
+             </div>
+           </div>
+ 
+diff --git a/src/components/CheckInModal.tsx b/src/components/CheckInModal.tsx
+index 955a28d..016954f 100644
+--- a/src/components/CheckInModal.tsx
++++ b/src/components/CheckInModal.tsx
+@@ -1,8 +1,8 @@
+ "use client";
+ import React, { useState, useEffect } from 'react';
+ import { User } from 'firebase/auth';
+-import { db, handleFirestoreError, OperationType } from '../firebase';
+-import { doc, getDoc, setDoc, updateDoc, increment, serverTimestamp } from 'firebase/firestore';
++import { db } from '../firebase';
++import { doc, getDoc } from 'firebase/firestore';
+ import { Sparkles, Calendar, Gift, X, CheckCircle2, Loader2 } from 'lucide-react';
+ import { getDailyGreeting } from '../services/geminiService';
+ 
+@@ -43,29 +43,25 @@ export default function CheckInModal({ user, onClose }: CheckInModalProps) {
+ 
+   const handleCheckIn = async () => {
+     setCheckingIn(true);
+-    const rewardAmount = 10; // Fixed reward for now
+-    const path = `users/${user.uid}`;
+     
+     try {
+-      // Update user document
+-      await updateDoc(doc(db, path), {
+-        coins: increment(rewardAmount),
+-        lastCheckIn: today,
+-        updatedAt: serverTimestamp()
++      const idToken = await user.getIdToken();
++      const res = await fetch('/api/checkin/claim', {
++        method: 'POST',
++        headers: {
++          'content-type': 'application/json',
++          authorization: `Bearer ${idToken}`,
++        },
++        body: JSON.stringify({})
+       });
++      const data = await res.json().catch(() => ({}));
++      if (!res.ok) throw new Error(data.error || 'Check-in failed');
+ 
+-      // Log check-in
+-      await setDoc(doc(db, `${path}/checkins/${today}`), {
+-        userId: user.uid,
+-        date: today,
+-        reward: rewardAmount,
+-        createdAt: serverTimestamp()
+-      });
+-
+-      setReward(rewardAmount);
++      setReward(Number(data.rewardCoins || 0));
+       setHasCheckedInToday(true);
+     } catch (error) {
+-      handleFirestoreError(error, OperationType.WRITE, path);
++      console.error(error);
++      alert('Không thể điểm danh lúc này. Vui lòng thử lại sau.');
+     } finally {
+       setCheckingIn(false);
+     }
+@@ -102,7 +98,7 @@ export default function CheckInModal({ user, onClose }: CheckInModalProps) {
+ 
+           <div className="text-center mb-10">
+             <h2 className="font-display text-3xl font-black text-text-main uppercase tracking-tighter mb-4">Điểm danh hàng ngày</h2>
+-            <p className="text-sm text-muted font-medium italic">"{greeting}"</p>
++            <p className="text-sm text-muted font-medium italic">&quot;{greeting}&quot;</p>
+           </div>
+ 
+           <div className="bg-background-light rounded-3xl p-8 mb-10 border border-accent/5">
+diff --git a/src/components/CreatorStudioView.tsx b/src/components/CreatorStudioView.tsx
+index cdc0152..4c642e3 100644
+--- a/src/components/CreatorStudioView.tsx
++++ b/src/components/CreatorStudioView.tsx
+@@ -1,12 +1,14 @@
+ import React, { useState, useEffect } from 'react';
+-import { LayoutDashboard, BookPlus, FileText, Settings, Plus, ChevronRight, Edit3, Trash2, Eye, MessageSquare, Save, X, Image as ImageIcon, Loader2, Wallet, ArrowRightLeft, Zap, Bot } from 'lucide-react';
++import { LayoutDashboard, BookPlus, FileText, Settings, Plus, ChevronRight, Edit3, Trash2, Eye, MessageSquare, Save, X, Image as ImageIcon, Loader2, Wallet, ArrowRightLeft, Bot } from 'lucide-react';
+ import { User } from 'firebase/auth';
+ import { Novel, Chapter, UserProfile } from '../types';
+ import WithdrawModal from './WithdrawModal';
+ import AutoBotImport from './AutoBotImport';
+ import { db, handleFirestoreError, OperationType } from '../firebase';
+-import { collection, query, where, onSnapshot, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, orderBy, getDoc, getDocs, writeBatch, increment } from 'firebase/firestore';
++import { collection, query, where, onSnapshot, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, orderBy, getDocs, writeBatch } from 'firebase/firestore';
+ import { GENRES } from '../constants';
++import { useAuth } from '@/contexts/AuthContext';
++import { isAdmin } from '@/lib/admin';
+ 
+ interface CreatorStudioViewProps {
+   user: User | null;
+@@ -16,9 +18,11 @@ interface CreatorStudioViewProps {
+ export default function CreatorStudioView({ user, onLogin }: CreatorStudioViewProps) {
+   const [novels, setNovels] = useState<Novel[]>([]);
+   const [loading, setLoading] = useState(true);
+-  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+   const [isCreating, setIsCreating] = useState(false);
+   const [showAutoBot, setShowAutoBot] = useState(false);
++
++  // Use shared AuthContext — no duplicate listener
++  const { userProfile, isAdminUser } = useAuth();
+   const [editingNovel, setEditingNovel] = useState<Novel | null>(null);
+   const [selectedNovelForChapters, setSelectedNovelForChapters] = useState<Novel | null>(null);
+   const [chapters, setChapters] = useState<Chapter[]>([]);
+@@ -101,13 +105,8 @@ export default function CreatorStudioView({ user, onLogin }: CreatorStudioViewPr
+       handleFirestoreError(error, OperationType.LIST, 'novels');
+     });
+ 
+-    const unsubscribeProfile = onSnapshot(doc(db, 'users', user.uid), (docSnap) => {
+-      if (docSnap.exists()) setUserProfile(docSnap.data() as UserProfile);
+-    });
+-
+     return () => {
+       unsubscribeNovels();
+-      unsubscribeProfile();
+     };
+   }, [user]);
+ 
+@@ -173,9 +172,10 @@ export default function CreatorStudioView({ user, onLogin }: CreatorStudioViewPr
+       }
+       resetNovelForm();
+       alert("Lưu truyện thành công!");
+-    } catch (error: any) {
++    } catch (error: unknown) {
+       handleFirestoreError(error, OperationType.WRITE, 'novels');
+-      alert(`Lỗi đăng truyện: ${error.message || 'Thiếu quyền Firestore hoặc lỗi kết nối. Vui lòng kiểm tra tab Console (F12) để xem chi tiết mã lỗi.'}`);
++      const message = error instanceof Error ? error.message : 'Thiếu quyền Firestore hoặc lỗi kết nối. Vui lòng kiểm tra tab Console (F12) để xem chi tiết mã lỗi.';
++      alert(`Lỗi đăng truyện: ${message}`);
+     } finally {
+       setIsSubmittingNovel(false);
+     }
+@@ -273,29 +273,24 @@ export default function CreatorStudioView({ user, onLogin }: CreatorStudioViewPr
+ 
+   const handleConfirmWithdraw = async (bankName: string, accountName: string, accountNumber: string) => {
+     if (!user || !userProfile) return;
+-    const currentCoins = userProfile.coins || 0;
+     
+     try {
+-      const batch = writeBatch(db);
+-      
+-      const userRef = doc(db, 'users', user.uid);
+-      batch.set(userRef, { coins: 0 }, { merge: true });
+-
+-      const reqRef = doc(collection(db, 'withdraw_requests'));
+-      batch.set(reqRef, {
+-        userId: user.uid,
+-        userName: userProfile.displayName || 'Khuyết danh',
+-        userEmail: userProfile.email || '',
+-        amountXu: currentCoins,
+-        amountVND: currentCoins * 100,
+-        bankName,
+-        accountName,
+-        accountNumber,
+-        status: 'PENDING',
+-        createdAt: serverTimestamp()
++      const idToken = await user.getIdToken();
++      const res = await fetch('/api/withdraw/request', {
++        method: 'POST',
++        headers: {
++          'content-type': 'application/json',
++          authorization: `Bearer ${idToken}`,
++        },
++        body: JSON.stringify({
++          bankName,
++          accountName,
++          accountNumber,
++        }),
+       });
+ 
+-      await batch.commit();
++      const data = await res.json().catch(() => ({}));
++      if (!res.ok) throw new Error(data.error || 'Withdrawal request failed');
+       setShowWithdrawModal(false);
+       alert('Gửi yêu cầu rút tiền thành công!');
+     } catch (e) {
+@@ -334,7 +329,7 @@ export default function CreatorStudioView({ user, onLogin }: CreatorStudioViewPr
+         </div>
+ 
+         <div className="flex gap-3">
+-          {user?.email && ['phamanhtung.jp@gmail.com', 'truyen24hvnn@gmail.com'].includes(user.email) && (
++          {isAdminUser && (
+             <button 
+               onClick={() => setShowAutoBot(true)}
+               className="flex items-center gap-2 px-6 py-4 bg-orange-500 text-white rounded-full font-black text-xs uppercase tracking-widest shadow-xl shadow-orange-500/20 hover:opacity-90 transition-all"
+@@ -368,16 +363,6 @@ export default function CreatorStudioView({ user, onLogin }: CreatorStudioViewPr
+             </div>
+           </div>
+           <div className="flex flex-col sm:flex-row items-center gap-3">
+-            {user?.email && ['phamanhtung.jp@gmail.com', 'truyen24hvnn@gmail.com'].includes(user.email) && (
+-              <button 
+-                onClick={() => updateDoc(doc(db, 'users', user.uid), { coins: increment(500) })}
+-                className="w-full sm:w-auto flex items-center justify-center gap-2 px-8 py-4 bg-orange-500/10 text-orange-500 rounded-full font-black text-xs uppercase tracking-widest shadow-lg hover:bg-orange-500 hover:text-white transition-all"
+-              >
+-                <Zap className="size-4" />
+-                <span>Bơm 500 Xu (Test Admin)</span>
+-              </button>
+-            )}
+-
+             <button 
+               onClick={handleWithdrawClick}
+               className="w-full sm:w-auto flex items-center justify-center gap-2 px-8 py-4 bg-background-light text-text-main border-2 border-accent/10 rounded-full font-black text-xs uppercase tracking-widest shadow-lg hover:border-primary hover:text-primary transition-all"
+@@ -551,7 +536,7 @@ export default function CreatorStudioView({ user, onLogin }: CreatorStudioViewPr
+                   <div>
+                     <label className="text-[10px] uppercase tracking-widest font-black text-muted mb-3 block">Trạng thái</label>
+                     <select 
+-                      value={status} onChange={e => setStatus(e.target.value as any)}
++                      value={status} onChange={e => setStatus(e.target.value as 'Đang ra' | 'Hoàn thành')}
+                       className="w-full h-14 px-6 bg-background-light rounded-2xl border-none outline-none font-bold text-text-main focus:ring-2 focus:ring-primary/20 transition-all appearance-none"
+                     >
+                       <option value="Đang ra">Đang ra</option>
+diff --git a/src/components/DiscoverView.tsx b/src/components/DiscoverView.tsx
+index acedf69..f120af1 100644
+--- a/src/components/DiscoverView.tsx
++++ b/src/components/DiscoverView.tsx
+@@ -14,17 +14,35 @@ const UPDATES_PER_PAGE = 5;
+ 
+ import BannerSlider from './BannerSlider';
+ 
++interface LeaderboardUser {
++  id?: string;
++  uid?: string;
++  displayName?: string;
++  photoURL?: string;
++  coins?: number;
++}
++
+ export default function DiscoverView({ onNovelSelect }: DiscoverViewProps) {
+   const [currentPage, setCurrentPage] = useState(1);
+   const [recommendationPage, setRecommendationPage] = useState(0); // For Đề Cử carousel
+   const [activeLeaderboardTab, setActiveLeaderboardTab] = useState<'TRUYỆN' | 'ĐẠI GIA' | 'TÁC GIẢ'>('TRUYỆN');
+   const [visibleLimit, setVisibleLimit] = useState(20);
+   const [dynamicNovels, setDynamicNovels] = useState<Novel[]>([]);
+-  const [topUsers, setTopUsers] = useState<any[]>([]);
++  const [topUsers, setTopUsers] = useState<LeaderboardUser[]>([]);
+   const [loading, setLoading] = useState(true);
+ 
+   useEffect(() => {
+-    const qNovels = query(collection(db, 'novels'), limit(visibleLimit));
++    const fallbackTimer = window.setTimeout(() => {
++      setLoading(false);
++    }, 8000);
++
++    // Always order by updatedAt desc so freshly-published AI novels surface
++    // on the homepage instead of being skipped by `limit()` document-id order.
++    const qNovels = query(
++      collection(db, 'novels'),
++      orderBy('updatedAt', 'desc'),
++      limit(visibleLimit)
++    );
+     const unsubscribeNovels = onSnapshot(qNovels, (snapshot) => {
+       const fetchedNovels = snapshot.docs.map(doc => ({
+         id: doc.id,
+@@ -32,24 +50,29 @@ export default function DiscoverView({ onNovelSelect }: DiscoverViewProps) {
+       })) as Novel[];
+       setDynamicNovels(fetchedNovels);
+       setLoading(false);
++      window.clearTimeout(fallbackTimer);
+     }, (error) => {
+       handleFirestoreError(error, OperationType.LIST, 'novels');
+       setLoading(false);
++      window.clearTimeout(fallbackTimer);
+     });
+ 
+     const qUsers = query(collection(db, 'users'), orderBy('coins', 'desc'), limit(10));
+     const unsubscribeUsers = onSnapshot(qUsers, (snapshot) => {
+       const users = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+       setTopUsers(users);
++    }, (error) => {
++      handleFirestoreError(error, OperationType.LIST, 'users');
+     });
+ 
+     return () => {
++      window.clearTimeout(fallbackTimer);
+       unsubscribeNovels();
+       unsubscribeUsers();
+     };
+   }, [visibleLimit]);
+ 
+-  const allNovels = dynamicNovels;
++  const allNovels = dynamicNovels.length > 0 ? dynamicNovels : NOVELS;
+ 
+   const featuredNovel = allNovels[0] || null;
+   const hotNovels = allNovels.filter(n => n.isHot).slice(0, 10);
+@@ -243,6 +266,14 @@ export default function DiscoverView({ onNovelSelect }: DiscoverViewProps) {
+                             Hot
+                           </span>
+                         )}
++                        {novel.aiAssisted && (
++                          <span
++                            title="Tác phẩm có hỗ trợ của AI"
++                            className="flex items-center gap-1 px-2 py-0.5 bg-yellow-500/15 text-yellow-500 text-[9px] font-black rounded-lg uppercase border border-yellow-500/30"
++                          >
++                            AI
++                          </span>
++                        )}
+                       </div>
+                       <div className="flex items-center gap-4 text-sm">
+                         <span className="text-muted font-medium truncate max-w-[150px]">{novel.author}</span>
+diff --git a/src/components/Footer.tsx b/src/components/Footer.tsx
+index cf08010..8ebdf7a 100644
+--- a/src/components/Footer.tsx
++++ b/src/components/Footer.tsx
+@@ -1,6 +1,6 @@
+ import React from 'react';
+ import Link from 'next/link';
+-import { Mail, MessageCircle, Shield, FileText, ChevronRight } from 'lucide-react';
++import { Mail, MessageCircle, Shield, FileText, ChevronRight, Info, Sparkles } from 'lucide-react';
+ 
+ export default function Footer() {
+   return (
+@@ -41,6 +41,16 @@ export default function Footer() {
+                   <ChevronRight className="size-3 text-accent group-hover:text-primary transition-colors" /> Bảng Xếp Hạng
+                 </Link>
+               </li>
++              <li>
++                <Link href="/blog" className="text-sm text-muted hover:text-primary transition-colors flex items-center gap-2 group">
++                  <ChevronRight className="size-3 text-accent group-hover:text-primary transition-colors" /> Blog & Review
++                </Link>
++              </li>
++              <li>
++                <Link href="/gioi-thieu" className="text-sm text-muted hover:text-primary transition-colors flex items-center gap-2 group">
++                  <ChevronRight className="size-3 text-accent group-hover:text-primary transition-colors" /> Giới Thiệu
++                </Link>
++              </li>
+             </ul>
+           </div>
+ 
+@@ -83,12 +93,26 @@ export default function Footer() {
+ 
+         </div>
+ 
+-        <div className="mt-12 pt-8 border-t border-accent/10 flex flex-col md:flex-row justify-between items-center gap-4">
++        {/* AI Content Disclosure — bắt buộc cho AdSense + tuân thủ minh bạch */}
++        <div className="mt-10 p-4 rounded-2xl bg-yellow-500/5 border border-yellow-500/20 flex items-start gap-3">
++          <Sparkles className="size-5 text-yellow-500 shrink-0 mt-0.5" />
++          <p className="text-xs text-muted leading-relaxed">
++            <strong className="text-yellow-500">Minh bạch AI:</strong> Một phần nội dung trên
++            Truyen24h.vn được sinh ra với sự hỗ trợ của trí tuệ nhân tạo (Google Gemini).
++            Các tác phẩm như vậy luôn được gắn nhãn <em className="text-yellow-500 not-italic">"AI-assisted"</em>
++            {' '}tại trang chi tiết.{' '}
++            <Link href="/gioi-thieu" className="text-primary hover:underline">Tìm hiểu thêm</Link>.
++          </p>
++        </div>
++
++        <div className="mt-8 pt-8 border-t border-accent/10 flex flex-col md:flex-row justify-between items-center gap-4">
+           <p className="text-xs text-muted font-medium">
+             &copy; {new Date().getFullYear()} Truyen24h.vn. All rights reserved.
+           </p>
+           <div className="flex items-center gap-6">
+-             <p className="text-[10px] uppercase font-black tracking-widest text-muted/50">Coded with 🤍 by AI</p>
++             <Link href="/gioi-thieu" className="text-[10px] uppercase font-black tracking-widest text-muted/50 hover:text-primary flex items-center gap-1.5">
++               <Info className="size-3" /> About
++             </Link>
+           </div>
+         </div>
+       </div>
+diff --git a/src/components/NovelDetailView.tsx b/src/components/NovelDetailView.tsx
+index 5341106..459deb7 100644
+--- a/src/components/NovelDetailView.tsx
++++ b/src/components/NovelDetailView.tsx
+@@ -4,8 +4,43 @@ import { useState, useMemo, useEffect } from 'react';
+ import CommentSection from './CommentSection';
+ import { User } from 'firebase/auth';
+ import { db, handleFirestoreError, OperationType } from '../firebase';
+-import { collection, query, orderBy, onSnapshot, doc, setDoc, serverTimestamp, getDoc, updateDoc, increment } from 'firebase/firestore';
++import { collection, query, orderBy, onSnapshot, doc, getDoc } from 'firebase/firestore';
+ import { getAIRecommendations, getNovelSummary } from '../services/geminiService';
++import { useAuth } from '@/contexts/AuthContext';
++
++type ResumeProgress = {
++  lastChapterId?: string;
++  lastChapterNumber?: number;
++};
++
++function formatChapterPublishDate(value: unknown): string {
++  if (!value) return 'Mới đăng';
++
++  if (typeof value === 'string') {
++    const date = new Date(value);
++    return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString('vi-VN');
++  }
++
++  if (typeof value === 'number') {
++    const date = new Date(value);
++    return Number.isNaN(date.getTime()) ? 'Mới đăng' : date.toLocaleDateString('vi-VN');
++  }
++
++  if (typeof value === 'object') {
++    const maybeTimestamp = value as { toDate?: () => Date; toMillis?: () => number; seconds?: number };
++    if (typeof maybeTimestamp.toDate === 'function') {
++      return maybeTimestamp.toDate().toLocaleDateString('vi-VN');
++    }
++    if (typeof maybeTimestamp.toMillis === 'function') {
++      return new Date(maybeTimestamp.toMillis()).toLocaleDateString('vi-VN');
++    }
++    if (typeof maybeTimestamp.seconds === 'number') {
++      return new Date(maybeTimestamp.seconds * 1000).toLocaleDateString('vi-VN');
++    }
++  }
++
++  return 'Mới đăng';
++}
+ 
+ // ─── Chapter List Panel (scrollable, fixed-height) ─────────────────────────
+ function ChapterListPanel({ allChapters, onChapterSelect }: { allChapters: Chapter[]; onChapterSelect: (c: Chapter) => void }) {
+@@ -13,7 +48,7 @@ function ChapterListPanel({ allChapters, onChapterSelect }: { allChapters: Chapt
+   const [sortAsc, setSortAsc] = useState(true);
+ 
+   const filtered = useMemo(() => {
+-    let list = allChapters.filter(c =>
++    const list = allChapters.filter(c =>
+       `${c.chapterNumber} ${c.title}`.toLowerCase().includes(search.toLowerCase())
+     );
+     return sortAsc ? list : [...list].reverse();
+@@ -74,7 +109,7 @@ function ChapterListPanel({ allChapters, onChapterSelect }: { allChapters: Chapt
+           </div>
+         ) : (
+           <div className="grid grid-cols-1 md:grid-cols-2">
+-            {filtered.map((chapter, idx) => (
++            {filtered.map((chapter) => (
+               <div
+                 key={chapter.id}
+                 onClick={() => onChapterSelect(chapter)}
+@@ -86,7 +121,7 @@ function ChapterListPanel({ allChapters, onChapterSelect }: { allChapters: Chapt
+                   </span>
+                   <span className="text-[11px] text-muted mt-1 flex items-center gap-1.5">
+                     <Clock className="size-3 shrink-0" />
+-                    {chapter.publishDate}
++                    {formatChapterPublishDate(chapter.publishDate)}
+                   </span>
+                 </div>
+                 <div className="p-2 bg-background-light rounded-full group-hover:bg-primary group-hover:text-white transition-all shrink-0">
+@@ -118,10 +153,14 @@ export default function NovelDetailView({ novel, onChapterSelect, onNovelSelect,
+   const [loadingSummary, setLoadingSummary] = useState(false);
+   const [dynamicChapters, setDynamicChapters] = useState<Chapter[]>([]);
+   const [limitedNovels, setLimitedNovels] = useState<Novel[]>([]);
+-  const [userProfile, setUserProfile] = useState<any>(null);
+   const [donateAmount, setDonateAmount] = useState<number>(100);
+   const [isProcessing, setIsProcessing] = useState(false);
+   const [showDonateModal, setShowDonateModal] = useState(false);
++  const [resumeProgress, setResumeProgress] = useState<ResumeProgress | null>(null);
++
++  // Use shared AuthContext — no duplicate listener
++  const { user: authUser, userProfile } = useAuth();
++  const currentUser = authUser || user;
+ 
+   // ✅ Fetch 30 novels một lần bằng getDocs (không onSnapshot — không real-time overhead)
+   useEffect(() => {
+@@ -158,10 +197,58 @@ export default function NovelDetailView({ novel, onChapterSelect, onNovelSelect,
+ 
+   // Chapters tĩnh từ novel.chapters luôn có sẵn — không block UI
+   const allChapters = useMemo(() => {
+-    const combined = [...(novel.chapters || []), ...dynamicChapters];
+-    return combined.sort((a, b) => a.chapterNumber - b.chapterNumber);
++    const byId = new Map<string, Chapter>();
++    [...(novel.chapters || []), ...dynamicChapters].forEach((chapter) => {
++      const key = chapter.id || `chapter-${chapter.chapterNumber}`;
++      byId.set(key, chapter);
++    });
++    return Array.from(byId.values()).sort((a, b) => a.chapterNumber - b.chapterNumber);
+   }, [novel.chapters, dynamicChapters]);
+ 
++  useEffect(() => {
++    if (!currentUser?.uid) {
++      setResumeProgress(null);
++      return;
++    }
++
++    const path = `users/${currentUser.uid}/bookshelf/${novel.id}`;
++    const progressRef = doc(db, path);
++    let cancelled = false;
++
++    getDoc(progressRef)
++      .then((snap) => {
++        if (!cancelled && snap.exists()) {
++          setResumeProgress(snap.data() as ResumeProgress);
++        }
++      })
++      .catch((error) => handleFirestoreError(error, OperationType.GET, path));
++
++    const unsubscribe = onSnapshot(progressRef, (snap) => {
++      if (snap.exists()) {
++        setResumeProgress(snap.data() as ResumeProgress);
++      } else {
++        setResumeProgress(null);
++      }
++    }, (error) => handleFirestoreError(error, OperationType.GET, path));
++
++    return () => {
++      cancelled = true;
++      unsubscribe();
++    };
++  }, [currentUser?.uid, novel.id]);
++
++  const resumeChapter = useMemo(() => {
++    if (!resumeProgress) return null;
++    return allChapters.find((chapter) => chapter.id === resumeProgress.lastChapterId)
++      || allChapters.find((chapter) => chapter.chapterNumber === resumeProgress.lastChapterNumber)
++      || null;
++  }, [allChapters, resumeProgress]);
++
++  const primaryChapter = resumeChapter || allChapters[0] || null;
++  const primaryCtaLabel = resumeChapter
++    ? `Tiếp tục từ chương ${resumeChapter.chapterNumber}`
++    : 'Bắt đầu đọc';
++
+   // ✅ AI Recommendations — tự động chạy sau khi limitedNovels load xong
+   useEffect(() => {
+     if (limitedNovels.length === 0) return;
+@@ -179,22 +266,10 @@ export default function NovelDetailView({ novel, onChapterSelect, onNovelSelect,
+     fetchAI();
+   }, [limitedNovels, novel]);
+ 
+-  useEffect(() => {
+-    if (!user) return;
+-    const unsubscribe = onSnapshot(doc(db, 'users', user.uid), (doc) => {
+-      if (doc.exists()) {
+-        const data = doc.data();
+-        if (data.email === 'phamanhtung.jp@gmail.com' || data.email === 'truyen24hvnn@gmail.com') {
+-           data.coins = 99999999;
+-        }
+-        setUserProfile(data);
+-      }
+-    });
+-    return () => unsubscribe();
+-  }, [user]);
++  // UserProfile now comes from AuthContext (above)
+ 
+   const handleDonate = async (amount: number) => {
+-    if (!user || !userProfile) {
++    if (!currentUser || !userProfile) {
+       onLogin();
+       return;
+     }
+@@ -210,15 +285,24 @@ export default function NovelDetailView({ novel, onChapterSelect, onNovelSelect,
+         return;
+       }
+       
+-      // Deduct from reader and increment contributionScore
+-      await updateDoc(doc(db, 'users', user.uid), { 
+-        coins: increment(-amount),
+-        contributionScore: increment(amount) 
++      const idToken = await currentUser.getIdToken();
++      const response = await fetch('/api/donate', {
++        method: 'POST',
++        headers: {
++          'Content-Type': 'application/json',
++          Authorization: `Bearer ${idToken}`,
++        },
++        body: JSON.stringify({
++          authorId: novel.authorId,
++          amount,
++        }),
+       });
+-      
+-      // Add to author
+-      await updateDoc(doc(db, 'users', novel.authorId), { coins: increment(amount) });
+-      
++
++      if (!response.ok) {
++        const data = await response.json().catch(() => ({}));
++        throw new Error(data.error || 'Donation failed');
++      }
++
+       alert(`Gửi tặng tác giả ${amount.toLocaleString()} Xu thành công! Đại gia thật hào phóng!`);
+       setShowDonateModal(false);
+     } catch(e) {
+@@ -286,6 +370,14 @@ export default function NovelDetailView({ novel, onChapterSelect, onNovelSelect,
+                   Hot
+                 </span>
+               )}
++              {novel.aiAssisted && (
++                <span
++                  title="Tác phẩm có hỗ trợ của AI — xem chính sách tại /gioi-thieu"
++                  className="flex items-center gap-2 px-4 py-1.5 md:px-5 md:py-2 bg-yellow-500/15 text-yellow-500 border border-yellow-500/30 rounded-full text-[9px] md:text-[10px] font-black uppercase tracking-widest"
++                >
++                  AI-assisted
++                </span>
++              )}
+               {novel.genres.map(genre => (
+                 <span key={genre} className="px-4 py-1.5 md:px-5 md:py-2 bg-surface/90 backdrop-blur-md border border-black/5 rounded-full text-[9px] md:text-[10px] font-black uppercase tracking-widest text-text-main/70 shadow-sm">{genre}</span>
+               ))}
+@@ -322,25 +414,34 @@ export default function NovelDetailView({ novel, onChapterSelect, onNovelSelect,
+             </div>
+             <div className="flex flex-col sm:flex-row flex-wrap items-center gap-3 md:gap-6">
+               <button 
+-                onClick={() => allChapters[0] && onChapterSelect(allChapters[0])}
++                onClick={() => primaryChapter && onChapterSelect(primaryChapter)}
+                 className="flex items-center justify-center h-12 px-6 md:h-16 md:px-12 bg-primary text-white rounded-full font-black text-xs md:text-sm tracking-widest uppercase hover:opacity-90 transition-all shadow-2xl shadow-primary/30 transform hover:-translate-y-1 w-full sm:w-auto"
+               >
+-                Bắt đầu đọc
++                {primaryCtaLabel}
+               </button>
+               <div className="flex items-center gap-3 w-full sm:w-auto flex-1">
+                 <button 
+                   onClick={async () => {
+-                    if (!user) {
++                    if (!currentUser) {
+                       onLogin();
+                       return;
+                     }
+-                    const path = `users/${user.uid}/bookshelf/${novel.id}`;
++                    const path = `users/${currentUser.uid}/bookshelf/${novel.id}`;
+                     try {
+-                      await setDoc(doc(db, path), {
+-                        novelId: novel.id,
+-                        isFollowing: true,
+-                        updatedAt: serverTimestamp()
+-                      }, { merge: true });
++                      const idToken = await currentUser.getIdToken();
++                      const res = await fetch('/api/bookmark/toggle', {
++                        method: 'POST',
++                        headers: {
++                          'content-type': 'application/json',
++                          authorization: `Bearer ${idToken}`,
++                        },
++                        body: JSON.stringify({
++                          action: 'follow',
++                          novelId: novel.id,
++                        }),
++                      });
++                      const data = await res.json().catch(() => ({}));
++                      if (!res.ok) throw new Error(data.error || 'Bookmark update failed');
+                       alert('Đã thêm vào tủ sách!');
+                     } catch (error) {
+                       handleFirestoreError(error, OperationType.WRITE, path);
+diff --git a/src/components/ProfileEditModal.tsx b/src/components/ProfileEditModal.tsx
+index 65d39b9..a645d54 100644
+--- a/src/components/ProfileEditModal.tsx
++++ b/src/components/ProfileEditModal.tsx
+@@ -1,11 +1,10 @@
+ "use client";
+-import React, { useState } from 'react';
++import React, { useEffect, useState } from 'react';
+ import { User, updateProfile } from 'firebase/auth';
+-import { X, Camera, Save, Loader2, Zap, Coins, Crown, Gift } from 'lucide-react';
+-import { db, handleFirestoreError, OperationType } from '../firebase';
+-import { doc, updateDoc, increment, onSnapshot } from 'firebase/firestore';
++import { doc, onSnapshot } from 'firebase/firestore';
++import { Camera, Coins, Crown, Loader2, Save, X, Zap } from 'lucide-react';
++import { db } from '../firebase';
+ import { UserProfile } from '../types';
+-import { useEffect } from 'react';
+ 
+ interface ProfileEditModalProps {
+   user: User;
+@@ -21,37 +20,16 @@ export default function ProfileEditModal({ user, onClose, onUpdate }: ProfileEdi
+   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+ 
+   useEffect(() => {
+-    const unsubscribe = onSnapshot(doc(db, 'users', user.uid), (doc) => {
+-      if (doc.exists()) {
+-        setUserProfile(doc.data() as UserProfile);
++    const unsubscribe = onSnapshot(doc(db, 'users', user.uid), (snapshot) => {
++      if (snapshot.exists()) {
++        setUserProfile(snapshot.data() as UserProfile);
+       }
+     });
+     return () => unsubscribe();
+-  }, [user]);
++  }, [user.uid]);
+ 
+-  const handleRecharge = async () => {
+-    const path = `users/${user.uid}`;
+-    try {
+-      await updateDoc(doc(db, path), {
+-        coins: increment(1000)
+-      });
+-      alert('Đã nạp thành công 1000 Ngọc! (Bản thử nghiệm)');
+-    } catch (error) {
+-      handleFirestoreError(error, OperationType.UPDATE, path);
+-    }
+-  };
+-
+-  const handleUpgradeVIP = async () => {
+-    const path = `users/${user.uid}`;
+-    try {
+-      await updateDoc(doc(db, path), {
+-        isVip: true,
+-        badges: ['VIP', 'Fan Cứng']
+-      });
+-      alert('Chúc mừng! Bạn đã trở thành thành viên VIP. (Bản thử nghiệm)');
+-    } catch (error) {
+-      handleFirestoreError(error, OperationType.UPDATE, path);
+-    }
++  const goToVipPage = () => {
++    window.location.href = '/vip';
+   };
+ 
+   const handleSubmit = async (e: React.FormEvent) => {
+@@ -62,7 +40,7 @@ export default function ProfileEditModal({ user, onClose, onUpdate }: ProfileEdi
+     try {
+       await updateProfile(user, {
+         displayName: displayName.trim(),
+-        photoURL: photoURL.trim() || null
++        photoURL: photoURL.trim() || null,
+       });
+       onUpdate();
+       onClose();
+@@ -78,7 +56,7 @@ export default function ProfileEditModal({ user, onClose, onUpdate }: ProfileEdi
+     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose}></div>
+       <div className="relative w-full max-w-md bg-surface rounded-[40px] shadow-2xl border border-accent/10 p-10 animate-in zoom-in-95 duration-300">
+-        <button 
++        <button
+           onClick={onClose}
+           className="absolute top-6 right-6 p-2 hover:bg-background-light rounded-full text-muted transition-colors"
+         >
+@@ -90,7 +68,6 @@ export default function ProfileEditModal({ user, onClose, onUpdate }: ProfileEdi
+           <p className="text-sm text-muted font-medium">Quản lý thông tin và tài sản của bạn</p>
+         </div>
+ 
+-        {/* Stats Section */}
+         <div className="grid grid-cols-2 gap-4 mb-10">
+           <div className="bg-background-light rounded-3xl p-4 border border-accent/5 flex flex-col items-center text-center">
+             <div className="size-10 bg-primary/10 rounded-xl flex items-center justify-center text-primary mb-2">
+@@ -108,8 +85,8 @@ export default function ProfileEditModal({ user, onClose, onUpdate }: ProfileEdi
+             </div>
+             <span className="text-[10px] font-black text-muted uppercase tracking-widest mb-1">Số dư Ngọc</span>
+             <span className="text-xl font-black text-text-main">{userProfile?.coins || 0}</span>
+-            <button 
+-              onClick={handleRecharge}
++            <button
++              onClick={goToVipPage}
+               className="text-[10px] font-black text-primary uppercase tracking-widest mt-2 hover:underline"
+             >
+               Nạp thêm
+@@ -121,9 +98,9 @@ export default function ProfileEditModal({ user, onClose, onUpdate }: ProfileEdi
+           <div className="flex flex-col items-center gap-6">
+             <div className="relative group">
+               <div className="size-32 rounded-full overflow-hidden border-4 border-primary/20 shadow-xl">
+-                <img 
+-                  src={photoURL || `https://ui-avatars.com/api/?name=${displayName || 'User'}`} 
+-                  alt="Avatar" 
++                <img
++                  src={photoURL || `https://ui-avatars.com/api/?name=${displayName || 'User'}`}
++                  alt="Avatar"
+                   referrerPolicy="no-referrer"
+                   className="w-full h-full object-cover"
+                 />
+@@ -132,11 +109,11 @@ export default function ProfileEditModal({ user, onClose, onUpdate }: ProfileEdi
+                 <Camera className="size-8 text-white" />
+               </div>
+             </div>
+-            
++
+             <div className="w-full">
+               <label className="text-[10px] uppercase tracking-[0.2em] font-black text-muted mb-3 block">Link ảnh đại diện</label>
+-              <input 
+-                type="url" 
++              <input
++                type="url"
+                 value={photoURL}
+                 onChange={(e) => setPhotoURL(e.target.value)}
+                 placeholder="https://example.com/avatar.jpg"
+@@ -147,8 +124,8 @@ export default function ProfileEditModal({ user, onClose, onUpdate }: ProfileEdi
+ 
+           <div>
+             <label className="text-[10px] uppercase tracking-[0.2em] font-black text-muted mb-3 block">Tên hiển thị</label>
+-            <input 
+-              type="text" 
++            <input
++              type="text"
+               required
+               value={displayName}
+               onChange={(e) => setDisplayName(e.target.value)}
+@@ -162,15 +139,15 @@ export default function ProfileEditModal({ user, onClose, onUpdate }: ProfileEdi
+           )}
+ 
+           <div className="flex gap-4 pt-4">
+-            <button 
++            <button
+               type="button"
+-              onClick={handleUpgradeVIP}
++              onClick={goToVipPage}
+               className="flex-1 h-14 bg-background-dark text-white rounded-full font-black text-xs uppercase tracking-widest shadow-xl hover:bg-black transition-all flex items-center justify-center gap-2"
+             >
+               <Crown className="size-4 text-yellow-400" />
+               Nâng cấp VIP
+             </button>
+-            <button 
++            <button
+               type="submit"
+               disabled={isUpdating}
+               className="flex-1 h-14 bg-primary text-white rounded-full font-black text-xs uppercase tracking-widest shadow-xl shadow-primary/20 hover:opacity-90 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+diff --git a/src/components/ReaderView.tsx b/src/components/ReaderView.tsx
+index fd81424..8ba35fa 100644
+--- a/src/components/ReaderView.tsx
++++ b/src/components/ReaderView.tsx
+@@ -1,10 +1,11 @@
+-import { ArrowLeft, ArrowRight, Settings, Menu, X, ChevronLeft, ChevronRight, List, AlertTriangle, Volume2, Loader2, Play, Pause, Crown, Lock, Unlock, MessageSquare, Send } from 'lucide-react';
++import { ArrowLeft, ArrowRight, Settings, Menu, X, ChevronLeft, ChevronRight, List, AlertTriangle, Volume2, Loader2, Play, Pause, Crown, Lock, Unlock, MessageSquare, Send, Trash2 } from 'lucide-react';
+ import { useRef } from 'react';
+ import { Novel, Chapter, UserProfile, InlineComment } from '../types';
+ import { useState, useEffect } from 'react';
+ import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+ import { db, handleFirestoreError, OperationType, auth, storage } from '../firebase';
+-import { doc, setDoc, serverTimestamp, onSnapshot, getDoc, collection, query, orderBy, addDoc } from 'firebase/firestore';
++import { doc, serverTimestamp, onSnapshot, getDoc, collection, query, orderBy, addDoc, deleteDoc } from 'firebase/firestore';
++import { useAuth } from '@/contexts/AuthContext';
+ 
+ interface ReaderViewProps {
+   novel: Novel;
+@@ -27,7 +28,6 @@ export default function ReaderView({ novel, chapter, onBack, onChapterChange, on
+   const [isAudioLoading, setIsAudioLoading] = useState(false);
+   const [isPlaying, setIsPlaying] = useState(false);
+   const audioRef = useRef<HTMLAudioElement | null>(null);
+-  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+   const [isUnlocking, setIsUnlocking] = useState(false);
+ 
+   // ZHIHU INLINE COMMENTS STATE
+@@ -39,6 +39,8 @@ export default function ReaderView({ novel, chapter, onBack, onChapterChange, on
+   const [commentDraft, setCommentDraft] = useState('');
+   const [highlightPosition, setHighlightPosition] = useState({ top: 0, left: 0 });
+   const [showSidebarThread, setShowSidebarThread] = useState<number | null>(null);
++  const [confirmingCommentId, setConfirmingCommentId] = useState<string | null>(null);
++  const [deletingCommentId, setDeletingCommentId] = useState<string | null>(null);
+ 
+   // Load inline comments
+   useEffect(() => {
+@@ -121,74 +123,78 @@ export default function ReaderView({ novel, chapter, onBack, onChapterChange, on
+     return acc;
+   }, {} as Record<number, InlineComment[]>);
+ 
+-  useEffect(() => {
+-    // Only listen to auth state to get userProfile
+-    const unsubscribeAuth = auth.onAuthStateChanged((user) => {
+-      if (!user) {
+-        setUserProfile(null);
+-        return;
+-      }
+-      const unsubscribeDoc = onSnapshot(doc(db, 'users', user.uid), (docSnap) => {
+-        if (docSnap.exists()) setUserProfile(docSnap.data() as UserProfile);
+-      });
+-      return () => unsubscribeDoc();
+-    });
+-    return () => unsubscribeAuth();
+-  }, []);
++  // Use AuthContext instead of duplicate listener
++  const { userProfile } = useAuth();
++
++  const formatCommentDate = (createdAt: unknown) => {
++    if (!createdAt) return 'vừa xong';
++    if (typeof createdAt !== 'object') return 'vừa xong';
++
++    const value = createdAt as { toDate?: () => Date; toMillis?: () => number; seconds?: number };
++    if (typeof value.toDate === 'function') {
++      return value.toDate().toLocaleDateString('vi-VN');
++    }
++    if (typeof value.toMillis === 'function') {
++      return new Date(value.toMillis()).toLocaleDateString('vi-VN');
++    }
++    if (typeof value.seconds === 'number') {
++      return new Date(value.seconds * 1000).toLocaleDateString('vi-VN');
++    }
++    return 'vừa xong';
++  };
++
++  const handleInlineCommentDelete = async (commentId: string) => {
++    const currentUser = auth.currentUser;
++    if (!currentUser) {
++      if (onLogin) onLogin();
++      return;
++    }
++
++    setDeletingCommentId(commentId);
++    const path = `novels/${novel.id}/chapters/${chapter.id}/inline_comments/${commentId}`;
++    try {
++      await deleteDoc(doc(db, path));
++      setConfirmingCommentId(null);
++    } catch (error) {
++      handleFirestoreError(error, OperationType.DELETE, path);
++    } finally {
++      setDeletingCommentId(null);
++    }
++  };
+ 
+   const handleUnlockChapter = async () => {
+     if (!auth.currentUser || !userProfile) {
+       if (onLogin) return onLogin();
+       return alert('Vui lòng đăng nhập!');
+     }
+-    const price = chapter.price || 50; // mặc định 50 Xu
+-    if ((userProfile.coins || 0) < price) {
+-      return alert('Bạn không đủ Xu. Vui lòng nạp thêm Xu để tiếp tục!');
+-    }
+-    
+     setIsUnlocking(true);
+     try {
+-      const { writeBatch, increment } = await import('firebase/firestore');
+-      const batch = writeBatch(db);
+-
+-      // 1. Trừ tiền Độc giả & Cập nhật danh sách chương đã mở
+-      const buyerRef = doc(db, 'users', auth.currentUser.uid);
+-      batch.set(buyerRef, {
+-        coins: userProfile.coins - price,
+-        unlockedChapters: [...(userProfile.unlockedChapters || []), chapter.id]
+-      }, { merge: true });
+-
+-      // 2. Chuyển 60% Xu cho Tác giả truyện (Nếu người mua ko phải chính tác giả)
+-      if (novel.authorId && novel.authorId !== auth.currentUser.uid) {
+-        const authorShare = Math.floor(price * 0.6); // Khúc này là 60%
+-        const platformFee = price - authorShare;
+-
+-        const authorRef = doc(db, 'users', novel.authorId);
+-        batch.set(authorRef, {
+-          coins: increment(authorShare)
+-        }, { merge: true });
+-
+-        // 3. Ghi vào Sổ Kế Toán (transactions log)
+-        const logRef = doc(collection(db, 'transactions'));
+-        batch.set(logRef, {
+-          type: 'UNLOCK_CHAPTER',
+-          chapterId: chapter.id,
++      const idToken = await auth.currentUser.getIdToken();
++      const res = await fetch('/api/unlock-chapter', {
++        method: 'POST',
++        headers: {
++          'content-type': 'application/json',
++          authorization: `Bearer ${idToken}`,
++        },
++        body: JSON.stringify({
+           novelId: novel.id,
+-          buyerId: auth.currentUser.uid,
+-          authorId: novel.authorId,
+-          price: price,
+-          authorShare: authorShare,
+-          platformFee: platformFee,
+-          createdAt: serverTimestamp()
+-        });
++          chapterId: chapter.id,
++        }),
++      });
++      const data = await res.json().catch(() => ({}));
++      if (!res.ok) {
++        if (res.status === 402) {
++          return alert('Bạn không đủ Xu. Vui lòng nạp thêm Xu để tiếp tục!');
++        }
++        throw new Error(data.error || 'Unlock failed');
+       }
+ 
+-      await batch.commit();
+     } catch (e) {
+       console.error(e);
+       alert('Có lỗi khi mở khóa. Quý khách vui lòng thử lại.');
++    } finally {
++      setIsUnlocking(false);
+     }
+-    setIsUnlocking(false);
+   };
+ 
+   const isChapterLocked = chapter.isVip && (!userProfile || !(userProfile.unlockedChapters || []).includes(chapter.id));
+@@ -326,13 +332,23 @@ export default function ReaderView({ novel, chapter, onBack, onChapterChange, on
+       const path = `users/${user.uid}/bookshelf/${novel.id}`;
+ 
+       try {
+-        await setDoc(doc(db, path), {
+-          novelId: novel.id,
+-          lastChapterId: chapter.id,
+-          lastChapterNumber: chapter.chapterNumber,
+-          progress: progress,
+-          updatedAt: serverTimestamp()
+-        }, { merge: true });
++        const idToken = await user.getIdToken();
++        const res = await fetch('/api/bookmark/toggle', {
++          method: 'POST',
++          headers: {
++            'content-type': 'application/json',
++            authorization: `Bearer ${idToken}`,
++          },
++          body: JSON.stringify({
++            action: 'progress',
++            novelId: novel.id,
++            lastChapterId: chapter.id,
++            lastChapterNumber: chapter.chapterNumber,
++            progress,
++          }),
++        });
++        const data = await res.json().catch(() => ({}));
++        if (!res.ok) throw new Error(data.error || 'Progress save failed');
+       } catch (error) {
+         handleFirestoreError(error, OperationType.WRITE, path);
+       }
+@@ -765,21 +781,61 @@ export default function ReaderView({ novel, chapter, onBack, onChapterChange, on
+                 {(groupedComments[showSidebarThread] || []).length === 0 ? (
+                   <div className="text-center text-muted text-sm py-10">Chưa có bình luận nào cho đoạn này. Bôi đen chữ để khơi mào nhé!</div>
+                 ) : (
+-                  (groupedComments[showSidebarThread] || []).map(comment => (
++                  (groupedComments[showSidebarThread] || []).map(comment => {
++                    const canDelete = auth.currentUser?.uid === comment.userId;
++                    const isConfirming = confirmingCommentId === comment.id;
++                    const isDeleting = deletingCommentId === comment.id;
++
++                    return (
+                     <div key={comment.id} className="flex gap-3">
+                       <img src={comment.userAvatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${comment.userId}`} alt={comment.userName} className="size-8 rounded-full bg-background-light object-cover shrink-0" />
+-                      <div className="flex flex-col">
+-                        <div className="flex items-baseline gap-2">
+-                          <span className="font-bold text-sm text-text-main">{comment.userName}</span>
+-                          <span className="text-[10px] text-muted">{new Date(comment.createdAt?.seconds * 1000).toLocaleDateString()}</span>
++                      <div className="flex flex-col flex-1 min-w-0">
++                        <div className="flex items-start justify-between gap-3">
++                          <div className="flex flex-wrap items-baseline gap-2">
++                            <span className="font-bold text-sm text-text-main">{comment.userName}</span>
++                            <span className="text-[10px] text-muted">{formatCommentDate(comment.createdAt)}</span>
++                          </div>
++                          {canDelete && (
++                            isConfirming ? (
++                              <div className="flex items-center gap-1 shrink-0">
++                                <button
++                                  type="button"
++                                  onClick={() => handleInlineCommentDelete(comment.id)}
++                                  disabled={isDeleting}
++                                  className="px-2 py-1 rounded-full bg-red-500 text-white text-[10px] font-black uppercase tracking-widest disabled:opacity-50"
++                                >
++                                  {isDeleting ? 'Đang xoá' : 'Xoá'}
++                                </button>
++                                <button
++                                  type="button"
++                                  onClick={() => setConfirmingCommentId(null)}
++                                  disabled={isDeleting}
++                                  className="px-2 py-1 rounded-full bg-background-light text-muted text-[10px] font-black uppercase tracking-widest disabled:opacity-50"
++                                >
++                                  Huỷ
++                                </button>
++                              </div>
++                            ) : (
++                              <button
++                                type="button"
++                                onClick={() => setConfirmingCommentId(comment.id)}
++                                className="p-1 text-muted hover:text-red-500 transition-colors shrink-0"
++                                aria-label="Xoá bình luận"
++                                title="Xoá bình luận"
++                              >
++                                <Trash2 className="size-4" />
++                              </button>
++                            )
++                          )}
+                         </div>
+                         {comment.selectedText && (
+-                          <span className="text-xs italic text-primary mt-1 select-none">"{comment.selectedText}"</span>
++                          <span className="text-xs italic text-primary mt-1 select-none">&quot;{comment.selectedText}&quot;</span>
+                         )}
+                         <p className="text-sm mt-1 text-text-main/90 leading-relaxed font-medium">{comment.content}</p>
+                       </div>
+                     </div>
+-                  ))
++                    );
++                  })
+                 )}
+               </div>
+ 
+diff --git a/src/components/TopNavBar.tsx b/src/components/TopNavBar.tsx
+index f870e3c..1151f88 100644
+--- a/src/components/TopNavBar.tsx
++++ b/src/components/TopNavBar.tsx
+@@ -1,14 +1,13 @@
+ "use client";
+ import { Search, ChevronDown, Menu, BookMarked, LogIn, LogOut, Sun, Moon, User as UserIcon, Coins, Sparkles, Trophy, Zap, Crown, BookPlus, Bell } from 'lucide-react';
+ import { GENRES } from '../constants';
+-import React, { useState, useEffect } from 'react';
++import React, { useState } from 'react';
+ import { User } from 'firebase/auth';
+ import ProfileEditModal from './ProfileEditModal';
+ import CheckInModal from './CheckInModal';
+ import Link from 'next/link';
+-import { db } from '../firebase';
+-import { doc, onSnapshot } from 'firebase/firestore';
+-import { UserProfile } from '../types';
++import { useAuth } from '@/contexts/AuthContext';
++import { isAdmin } from '@/lib/admin';
+ 
+ interface TopNavBarProps {
+   activeTab: 'discover' | 'bookshelf' | 'leaderboard' | 'creator-studio';
+@@ -41,30 +40,8 @@ export default function TopNavBar({
+   const [showProfileModal, setShowProfileModal] = useState(false);
+   const [showCheckInModal, setShowCheckInModal] = useState(false);
+ 
+-  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+-
+-  useEffect(() => {
+-    if (!user) {
+-      setUserProfile(null);
+-      return;
+-    }
+-
+-    const unsubscribe = onSnapshot(doc(db, 'users', user.uid), (doc) => {
+-      if (doc.exists()) {
+-        let profile = doc.data() as UserProfile;
+-        if (user.email === 'phamanhtung.jp@gmail.com' || user.email === 'truyen24hvnn@gmail.com') {
+-          profile = {
+-            ...profile,
+-            coins: 99999999, // Setup Admin Testing Coins
+-            badges: Array.from(new Set([...(profile.badges || []), 'VIP', 'Admin']))
+-          };
+-        }
+-        setUserProfile(profile);
+-      }
+-    });
+-
+-    return () => unsubscribe();
+-  }, [user]);
++  // Use shared AuthContext instead of duplicate listener
++  const { userProfile, isAdminUser } = useAuth();
+ 
+   const handleSearchSubmit = (e: React.FormEvent) => {
+     e.preventDefault();
+@@ -275,7 +252,7 @@ export default function TopNavBar({
+                       <BookPlus className="size-4" />
+                       Creator Studio
+                     </button>
+-                    {(user.email === 'phamanhtung.jp@gmail.com' || user.email === 'truyen24hvnn@gmail.com') && (
++                    {isAdminUser && (
+                       <button 
+                         onClick={() => {
+                           window.location.href = '/admin';
+diff --git a/src/components/TopNavBarClientWrapper.tsx b/src/components/TopNavBarClientWrapper.tsx
+index 88b4392..302d753 100644
+--- a/src/components/TopNavBarClientWrapper.tsx
++++ b/src/components/TopNavBarClientWrapper.tsx
+@@ -1,39 +1,13 @@
+ "use client";
+ 
+ import TopNavBar from './TopNavBar';
+-import { useState, useEffect } from 'react';
+ import { usePathname, useRouter } from 'next/navigation';
+-import { auth, loginWithGoogle, logout } from '@/firebase';
+-import { onAuthStateChanged, User } from 'firebase/auth';
++import { useAuth } from '@/contexts/AuthContext';
+ 
+ export default function TopNavBarClientWrapper() {
+   const pathname = usePathname();
+   const router = useRouter();
+-  const [user, setUser] = useState<User | null>(null);
+-  // Mặc định dark, đọc preference từ localStorage nếu user đã từng đổi
+-  const [isDarkMode, setIsDarkMode] = useState(true);
+-
+-  useEffect(() => {
+-    return onAuthStateChanged(auth, setUser);
+-  }, []);
+-
+-  // Khởi tạo: đọc từ localStorage, nếu chưa có gì thì mặc định dark
+-  useEffect(() => {
+-    const saved = localStorage.getItem('theme');
+-    const prefersDark = saved !== 'light'; // dark là default
+-    setIsDarkMode(prefersDark);
+-  }, []);
+-
+-  // Áp dụng class dark và lưu vào localStorage mỗi khi đổi
+-  useEffect(() => {
+-    if (isDarkMode) {
+-      document.documentElement.classList.add('dark');
+-      localStorage.setItem('theme', 'dark');
+-    } else {
+-      document.documentElement.classList.remove('dark');
+-      localStorage.setItem('theme', 'light');
+-    }
+-  }, [isDarkMode]);
++  const { user, login, logout, isDarkMode, toggleDarkMode } = useAuth();
+ 
+   const activeTab = pathname.startsWith('/bang-xep-hang') ? 'leaderboard' : 
+                     pathname.startsWith('/tu-sach') ? 'bookshelf' :
+@@ -56,10 +30,10 @@ export default function TopNavBarClientWrapper() {
+       onChapterFilterSelect={(filter) => router.push(`/tim-kiem?chapters=${encodeURIComponent(filter)}`)}
+       onSearch={(term) => router.push(`/tim-kiem?q=${encodeURIComponent(term)}`)}
+       user={user}
+-      onLogin={loginWithGoogle}
++      onLogin={login}
+       onLogout={logout}
+       isDarkMode={isDarkMode}
+-      onToggleDarkMode={() => setIsDarkMode(!isDarkMode)}
++      onToggleDarkMode={toggleDarkMode}
+     />
+   );
+ }
+diff --git a/src/firebase-backend.ts b/src/firebase-backend.ts
+index 6d5a238..b62d99c 100644
+--- a/src/firebase-backend.ts
++++ b/src/firebase-backend.ts
+@@ -2,13 +2,13 @@ import { initializeApp, getApps } from 'firebase/app';
+ import { getFirestore } from 'firebase/firestore';
+ 
+ const firebaseConfig = {
+-  projectId: "webtruyenhay-ae0eb",
+-  appId: "1:767174877469:web:aa065597afba0ef52f41f4",
+-  apiKey: "AIzaSyA-ZiYU6TkYhaYzVs79XqDKcvqMlHQp0VY",
+-  authDomain: "webtruyenhay-ae0eb.firebaseapp.com",
+-  storageBucket: "webtruyenhay-ae0eb.firebasestorage.app",
+-  messagingSenderId: "767174877469",
+-  measurementId: "G-7Y6041HHNT"
++  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
++  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
++  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
++  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
++  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
++  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
++  measurementId: process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID,
+ };
+ 
+ const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
+diff --git a/src/firebase.ts b/src/firebase.ts
+index a99d682..0b131d2 100644
+--- a/src/firebase.ts
++++ b/src/firebase.ts
+@@ -4,13 +4,13 @@ import { getFirestore, collection, doc, setDoc, getDoc, getDocs, query, where, o
+ import { getStorage } from 'firebase/storage';
+ 
+ const firebaseConfig = {
+-  projectId: "webtruyenhay-ae0eb",
+-  appId: "1:767174877469:web:aa065597afba0ef52f41f4",
+-  apiKey: "AIzaSyA-ZiYU6TkYhaYzVs79XqDKcvqMlHQp0VY",
+-  authDomain: "webtruyenhay-ae0eb.firebaseapp.com",
+-  storageBucket: "webtruyenhay-ae0eb.firebasestorage.app",
+-  messagingSenderId: "767174877469",
+-  measurementId: "G-7Y6041HHNT"
++  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
++  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
++  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
++  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
++  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
++  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
++  measurementId: process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID,
+ };
+ 
+ // Initialize Firebase
+@@ -38,7 +38,6 @@ export const loginWithGoogle = async () => {
+     return user;
+   } catch (error: any) {
+     console.error("Error logging in:", error);
+-    alert("Lỗi Firebase Auth: " + (error.message || String(error)) + `\n\n[MÃ ĐANG DÙNG CỦA ANH KẾT NỐI VÀO LÀ LÀ]:\n${firebaseConfig.apiKey}\n\n(Lưu ý: Bạn cần bật Google Sign-in trong Firebase Console và thêm localhost vào Authorized domains!)`);
+     throw error;
+   }
+ };
+diff --git a/src/types.ts b/src/types.ts
+index cedbe0a..0e60f58 100644
+--- a/src/types.ts
++++ b/src/types.ts
+@@ -27,6 +27,7 @@ export interface Novel {
+   isFull?: boolean;
+   translationGroup?: string;
+   latestChapterNumber?: number;
++  aiAssisted?: boolean;
+   createdAt?: any;
+   updatedAt?: any;
+ }

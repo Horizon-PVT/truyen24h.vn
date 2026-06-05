@@ -1,29 +1,46 @@
-import { Star, BookmarkPlus, BookmarkCheck, Users, Eye, BookOpen, ChevronRight, Share2, MessageSquare, Clock, Flame, Sparkles, Check, BrainCircuit, Heart, Search, ArrowUpDown, ArrowUp, ArrowDown, List } from 'lucide-react';
+import { Star, BookmarkPlus, Users, Eye, BookOpen, ChevronRight, Share2, MessageSquare, Clock, Flame, Sparkles, Check, BrainCircuit, Heart, Search, ArrowUpDown, ArrowUp, ArrowDown, List } from 'lucide-react';
 import { Novel, Chapter } from '../types';
 import { useState, useMemo, useEffect } from 'react';
 import CommentSection from './CommentSection';
-import ShareButtons from './ShareButtons';
 import { User } from 'firebase/auth';
 import { db, handleFirestoreError, OperationType } from '../firebase';
-import { collection, query, orderBy, onSnapshot, doc, setDoc, serverTimestamp, getDoc, updateDoc, increment } from 'firebase/firestore';
+import { collection, query, orderBy, onSnapshot, doc, getDoc } from 'firebase/firestore';
 import { getAIRecommendations, getNovelSummary } from '../services/geminiService';
 import { useAuth } from '@/contexts/AuthContext';
 
-function formatPublishDate(value: any): string {
-  // Translator + AI Studio writes serverTimestamp() which arrives as a
-  // Firestore Timestamp class instance on the client. Older chapters
-  // stored a plain string. We must NEVER render the object directly —
-  // React throws 'Objects are not valid as a React child' and the
-  // whole chapter list crashes the page.
-  if (!value) return '';
-  if (typeof value === 'string') return value;
-  if (typeof value.toDate === 'function') {
-    try { return value.toDate().toLocaleDateString('vi-VN'); } catch { return ''; }
-  }
-  if (typeof value === 'number') return new Date(value).toLocaleDateString('vi-VN');
-  return '';
-}
+type ResumeProgress = {
+  lastChapterId?: string;
+  lastChapterNumber?: number;
+};
 
+function formatChapterPublishDate(value: unknown): string {
+  if (!value) return 'Mới đăng';
+
+  if (typeof value === 'string') {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString('vi-VN');
+  }
+
+  if (typeof value === 'number') {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? 'Mới đăng' : date.toLocaleDateString('vi-VN');
+  }
+
+  if (typeof value === 'object') {
+    const maybeTimestamp = value as { toDate?: () => Date; toMillis?: () => number; seconds?: number };
+    if (typeof maybeTimestamp.toDate === 'function') {
+      return maybeTimestamp.toDate().toLocaleDateString('vi-VN');
+    }
+    if (typeof maybeTimestamp.toMillis === 'function') {
+      return new Date(maybeTimestamp.toMillis()).toLocaleDateString('vi-VN');
+    }
+    if (typeof maybeTimestamp.seconds === 'number') {
+      return new Date(maybeTimestamp.seconds * 1000).toLocaleDateString('vi-VN');
+    }
+  }
+
+  return 'Mới đăng';
+}
 
 // ─── Chapter List Panel (scrollable, fixed-height) ─────────────────────────
 function ChapterListPanel({ allChapters, onChapterSelect }: { allChapters: Chapter[]; onChapterSelect: (c: Chapter) => void }) {
@@ -31,15 +48,8 @@ function ChapterListPanel({ allChapters, onChapterSelect }: { allChapters: Chapt
   const [sortAsc, setSortAsc] = useState(true);
 
   const filtered = useMemo(() => {
-    // Defensive: skip rows missing required fields. Translator-saved
-    // chapters occasionally land with publishDate as a Firestore
-    // Timestamp object that we render via formatPublishDate, but if
-    // title or chapterNumber are missing the whole list previously
-    // threw and triggered the error-boundary 'This page couldn't load'.
-    let list = (allChapters || []).filter((c) => c && c.id && c.title != null);
-    const s = search.toLowerCase();
-    list = list.filter((c) =>
-      `${c.chapterNumber ?? ''} ${String(c.title ?? '')}`.toLowerCase().includes(s)
+    const list = allChapters.filter(c =>
+      `${c.chapterNumber} ${c.title}`.toLowerCase().includes(search.toLowerCase())
     );
     return sortAsc ? list : [...list].reverse();
   }, [allChapters, search, sortAsc]);
@@ -99,7 +109,7 @@ function ChapterListPanel({ allChapters, onChapterSelect }: { allChapters: Chapt
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2">
-            {filtered.map((chapter, idx) => (
+            {filtered.map((chapter) => (
               <div
                 key={chapter.id}
                 onClick={() => onChapterSelect(chapter)}
@@ -107,11 +117,11 @@ function ChapterListPanel({ allChapters, onChapterSelect }: { allChapters: Chapt
               >
                 <div className="flex flex-col min-w-0 flex-1 mr-3">
                   <span className="font-bold text-sm text-text-main group-hover:text-primary transition-colors truncate">
-                    Chương {chapter.chapterNumber}: {String(chapter.title ?? '')}
+                    Chương {chapter.chapterNumber}: {chapter.title}
                   </span>
                   <span className="text-[11px] text-muted mt-1 flex items-center gap-1.5">
                     <Clock className="size-3 shrink-0" />
-                    {formatPublishDate(chapter.publishDate)}
+                    {formatChapterPublishDate(chapter.publishDate)}
                   </span>
                 </div>
                 <div className="p-2 bg-background-light rounded-full group-hover:bg-primary group-hover:text-white transition-all shrink-0">
@@ -146,83 +156,11 @@ export default function NovelDetailView({ novel, onChapterSelect, onNovelSelect,
   const [donateAmount, setDonateAmount] = useState<number>(100);
   const [isProcessing, setIsProcessing] = useState(false);
   const [showDonateModal, setShowDonateModal] = useState(false);
-  const [isFollowing, setIsFollowing] = useState(false);
-  const [bookmarkBusy, setBookmarkBusy] = useState(false);
-  const [bookmarkToast, setBookmarkToast] = useState<string | null>(null);
-  const [resumeChapter, setResumeChapter] = useState<{ id: string; number: number } | null>(null);
+  const [resumeProgress, setResumeProgress] = useState<ResumeProgress | null>(null);
 
   // Use shared AuthContext — no duplicate listener
   const { user: authUser, userProfile } = useAuth();
-
-  // Subscribe to reading_progress for this novel so we can offer a
-  // 'Tiếp tục từ chương X' shortcut instead of jumping back to chapter 1.
-  // We deliberately pull `authUser` from AuthContext instead of relying on
-  // the parent's prop — the prop is initialised to null and only set after
-  // onAuthStateChanged resolves, so without this the effect can race the
-  // first paint of the chapter button and leave it stuck on 'Bắt đầu đọc'.
-  useEffect(() => {
-    const uid = authUser?.uid;
-    if (!uid) { setResumeChapter(null); return; }
-    const ref = doc(db, `users/${uid}/reading_progress/${novel.id}`);
-    // Prime via one-shot fetch so the button label updates ASAP, then
-    // attach the onSnapshot listener for live updates.
-    (async () => {
-      try {
-        const s = await getDoc(ref);
-        const data = s.data() as any;
-        if (data?.lastChapterId && data.lastChapterNumber) {
-          setResumeChapter({ id: data.lastChapterId, number: data.lastChapterNumber });
-        }
-      } catch (_e) { /* ignore */ }
-    })();
-    const unsub = onSnapshot(ref, (snap) => {
-      const data = snap.data() as any;
-      if (data?.lastChapterId && data.lastChapterNumber) {
-        setResumeChapter({ id: data.lastChapterId, number: data.lastChapterNumber });
-      } else {
-        setResumeChapter(null);
-      }
-    });
-    return () => unsub();
-  }, [authUser, novel.id]);
-
-  // Subscribe to bookshelf row so the button reflects current state in real time.
-  useEffect(() => {
-    if (!user) { setIsFollowing(false); return; }
-    const ref = doc(db, `users/${user.uid}/bookshelf/${novel.id}`);
-    const unsub = onSnapshot(ref, (snap) => {
-      const data = snap.data() as any;
-      setIsFollowing(!!data?.isFollowing);
-    });
-    return () => unsub();
-  }, [user, novel.id]);
-
-  // Auto-clear bookmark toast
-  useEffect(() => {
-    if (!bookmarkToast) return;
-    const t = setTimeout(() => setBookmarkToast(null), 2200);
-    return () => clearTimeout(t);
-  }, [bookmarkToast]);
-
-  async function toggleBookmark() {
-    if (!user) { onLogin(); return; }
-    setBookmarkBusy(true);
-    try {
-      const r = await fetch('/api/bookmark/toggle', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ uid: user.uid, novelId: novel.id, action: 'follow' }),
-      });
-      const data = await r.json();
-      if (!r.ok) throw new Error(data.error || 'Toggle failed');
-      setIsFollowing(data.following);
-      setBookmarkToast(data.following ? 'Đã thêm vào tủ sách' : 'Đã gỡ khỏi tủ sách');
-    } catch (e: any) {
-      setBookmarkToast('Lỗi: ' + (e.message || 'Không thể lưu'));
-    } finally {
-      setBookmarkBusy(false);
-    }
-  }
+  const currentUser = authUser || user;
 
   // ✅ Fetch 30 novels một lần bằng getDocs (không onSnapshot — không real-time overhead)
   useEffect(() => {
@@ -259,9 +197,57 @@ export default function NovelDetailView({ novel, onChapterSelect, onNovelSelect,
 
   // Chapters tĩnh từ novel.chapters luôn có sẵn — không block UI
   const allChapters = useMemo(() => {
-    const combined = [...(novel.chapters || []), ...dynamicChapters];
-    return combined.sort((a, b) => a.chapterNumber - b.chapterNumber);
+    const byId = new Map<string, Chapter>();
+    [...(novel.chapters || []), ...dynamicChapters].forEach((chapter) => {
+      const key = chapter.id || `chapter-${chapter.chapterNumber}`;
+      byId.set(key, chapter);
+    });
+    return Array.from(byId.values()).sort((a, b) => a.chapterNumber - b.chapterNumber);
   }, [novel.chapters, dynamicChapters]);
+
+  useEffect(() => {
+    if (!currentUser?.uid) {
+      setResumeProgress(null);
+      return;
+    }
+
+    const path = `users/${currentUser.uid}/bookshelf/${novel.id}`;
+    const progressRef = doc(db, path);
+    let cancelled = false;
+
+    getDoc(progressRef)
+      .then((snap) => {
+        if (!cancelled && snap.exists()) {
+          setResumeProgress(snap.data() as ResumeProgress);
+        }
+      })
+      .catch((error) => handleFirestoreError(error, OperationType.GET, path));
+
+    const unsubscribe = onSnapshot(progressRef, (snap) => {
+      if (snap.exists()) {
+        setResumeProgress(snap.data() as ResumeProgress);
+      } else {
+        setResumeProgress(null);
+      }
+    }, (error) => handleFirestoreError(error, OperationType.GET, path));
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [currentUser?.uid, novel.id]);
+
+  const resumeChapter = useMemo(() => {
+    if (!resumeProgress) return null;
+    return allChapters.find((chapter) => chapter.id === resumeProgress.lastChapterId)
+      || allChapters.find((chapter) => chapter.chapterNumber === resumeProgress.lastChapterNumber)
+      || null;
+  }, [allChapters, resumeProgress]);
+
+  const primaryChapter = resumeChapter || allChapters[0] || null;
+  const primaryCtaLabel = resumeChapter
+    ? `Tiếp tục từ chương ${resumeChapter.chapterNumber}`
+    : 'Bắt đầu đọc';
 
   // ✅ AI Recommendations — tự động chạy sau khi limitedNovels load xong
   useEffect(() => {
@@ -283,7 +269,7 @@ export default function NovelDetailView({ novel, onChapterSelect, onNovelSelect,
   // UserProfile now comes from AuthContext (above)
 
   const handleDonate = async (amount: number) => {
-    if (!user || !userProfile) {
+    if (!currentUser || !userProfile) {
       onLogin();
       return;
     }
@@ -299,15 +285,24 @@ export default function NovelDetailView({ novel, onChapterSelect, onNovelSelect,
         return;
       }
       
-      // Trừ xu người tặng + cộng điểm đóng góp
-      await updateDoc(doc(db, 'users', user.uid), { 
-        coins: increment(-amount),
-        contributionScore: increment(amount) 
+      const idToken = await currentUser.getIdToken();
+      const response = await fetch('/api/donate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({
+          authorId: novel.authorId,
+          amount,
+        }),
       });
-      
-      // Cộng xu cho tác giả
-      await updateDoc(doc(db, 'users', novel.authorId), { coins: increment(amount) });
-      
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Donation failed');
+      }
+
       alert(`Gửi tặng tác giả ${amount.toLocaleString()} Xu thành công! Đại gia thật hào phóng!`);
       setShowDonateModal(false);
     } catch(e) {
@@ -356,11 +351,6 @@ export default function NovelDetailView({ novel, onChapterSelect, onNovelSelect,
 
   return (
     <div className="w-full bg-background-light min-h-screen">
-      {bookmarkToast && (
-        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-[150] px-5 py-3 rounded-2xl bg-primary text-white text-sm font-bold shadow-2xl shadow-primary/30 animate-in fade-in slide-in-from-top-4 duration-300">
-          {bookmarkToast}
-        </div>
-      )}
       <div className="relative w-full h-[580px] overflow-hidden bg-background-dark">
         <div 
           className="absolute inset-0 bg-cover bg-center blur-3xl opacity-40 scale-110" 
@@ -380,7 +370,7 @@ export default function NovelDetailView({ novel, onChapterSelect, onNovelSelect,
                   Hot
                 </span>
               )}
-              {(novel as any).aiAssisted && (
+              {novel.aiAssisted && (
                 <span
                   title="Tác phẩm có hỗ trợ của AI — xem chính sách tại /gioi-thieu"
                   className="flex items-center gap-2 px-4 py-1.5 md:px-5 md:py-2 bg-yellow-500/15 text-yellow-500 border border-yellow-500/30 rounded-full text-[9px] md:text-[10px] font-black uppercase tracking-widest"
@@ -423,54 +413,52 @@ export default function NovelDetailView({ novel, onChapterSelect, onNovelSelect,
               </button>
             </div>
             <div className="flex flex-col sm:flex-row flex-wrap items-center gap-3 md:gap-6">
-              <button
-                onClick={() => {
-                  if (resumeChapter) {
-                    const ch = allChapters.find((c) => c.id === resumeChapter.id) || allChapters[resumeChapter.number - 1];
-                    if (ch) onChapterSelect(ch);
-                    return;
-                  }
-                  if (allChapters[0]) onChapterSelect(allChapters[0]);
-                }}
+              <button 
+                onClick={() => primaryChapter && onChapterSelect(primaryChapter)}
                 className="flex items-center justify-center h-12 px-6 md:h-16 md:px-12 bg-primary text-white rounded-full font-black text-xs md:text-sm tracking-widest uppercase hover:opacity-90 transition-all shadow-2xl shadow-primary/30 transform hover:-translate-y-1 w-full sm:w-auto"
               >
-                {resumeChapter ? `Tiếp tục từ chương ${resumeChapter.number}` : 'Bắt đầu đọc'}
+                {primaryCtaLabel}
               </button>
               <div className="flex items-center gap-3 w-full sm:w-auto flex-1">
-                <button
-                  onClick={toggleBookmark}
-                  disabled={bookmarkBusy}
-                  className={`flex items-center justify-center h-12 px-6 md:h-16 md:px-12 rounded-full font-black text-xs md:text-sm tracking-widest uppercase transition-all gap-2 md:gap-3 shadow-xl flex-1 disabled:opacity-50 ${
-                    isFollowing
-                      ? 'bg-primary/10 border-2 border-primary text-primary'
-                      : 'bg-surface border-2 border-accent/10 text-text-main hover:border-primary/40'
-                  }`}
+                <button 
+                  onClick={async () => {
+                    if (!currentUser) {
+                      onLogin();
+                      return;
+                    }
+                    const path = `users/${currentUser.uid}/bookshelf/${novel.id}`;
+                    try {
+                      const idToken = await currentUser.getIdToken();
+                      const res = await fetch('/api/bookmark/toggle', {
+                        method: 'POST',
+                        headers: {
+                          'content-type': 'application/json',
+                          authorization: `Bearer ${idToken}`,
+                        },
+                        body: JSON.stringify({
+                          action: 'follow',
+                          novelId: novel.id,
+                        }),
+                      });
+                      const data = await res.json().catch(() => ({}));
+                      if (!res.ok) throw new Error(data.error || 'Bookmark update failed');
+                      alert('Đã thêm vào tủ sách!');
+                    } catch (error) {
+                      handleFirestoreError(error, OperationType.WRITE, path);
+                    }
+                  }}
+                  className="flex items-center justify-center h-12 px-6 md:h-16 md:px-12 bg-surface border-2 border-accent/10 text-text-main rounded-full font-black text-xs md:text-sm tracking-widest uppercase hover:border-primary/40 transition-all gap-2 md:gap-3 shadow-xl flex-1"
                 >
-                  {isFollowing ? <BookmarkCheck className="size-4 md:size-6" /> : <BookmarkPlus className="size-4 md:size-6" />}
-                  <span className="hidden sm:inline">{isFollowing ? 'Đã lưu' : 'Thêm vào tủ sách'}</span>
-                  <span className="sm:hidden">{isFollowing ? 'Đã lưu' : 'Lưu'}</span>
+                  <BookmarkPlus className="size-4 md:size-6" />
+                  <span className="hidden sm:inline">Thêm vào tủ sách</span>
+                  <span className="sm:hidden">Lưu</span>
                 </button>
                 <button 
                   onClick={handleShare}
                   className={`flex-none h-12 w-12 md:h-[64px] md:w-[64px] flex items-center justify-center bg-surface rounded-full border-2 transition-all shadow-xl ${isShared ? 'border-green-500 text-green-500' : 'border-accent/10 text-muted hover:text-primary hover:border-primary/40'}`}
-                  title="Sao chép liên kết"
-                  aria-label="Sao chép liên kết"
                 >
                   {isShared ? <Check className="size-4 md:size-6" /> : <Share2 className="size-4 md:size-6" />}
                 </button>
-              </div>
-              {/* Full social-share toolbar: FB / X / Telegram / Copy.
-                  Lives on its own row so it stays readable on mobile and
-                  doesn't compete with the primary read/save CTAs above. */}
-              <div className="mt-4 md:mt-6 -mx-2 px-2 overflow-x-auto">
-                <ShareButtons
-                  url={typeof window !== 'undefined' ? window.location.href : `https://truyen24h.vn/truyen/${novel.id}`}
-                  title={novel.title}
-                  text={(novel.description || '').slice(0, 140)}
-                  hashtags={(novel.genres || []).slice(0, 3).map((g: string) => g.replace(/\s+/g, ''))}
-                  variant="compact"
-                  className="flex-wrap gap-3"
-                />
               </div>
             </div>
           </div>

@@ -1,8 +1,8 @@
 "use client";
-import { useState, useEffect } from 'react';
-import { db } from '../firebase';
-import { collection, query, orderBy, onSnapshot, updateDoc, doc } from 'firebase/firestore';
-import { ShieldCheck, CheckCircle2, Clock, Wallet, Search, Loader2 } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { collection, onSnapshot, orderBy, query, Timestamp } from 'firebase/firestore';
+import { CheckCircle2, Clock, Loader2, Search, ShieldCheck, Wallet } from 'lucide-react';
+import { auth, db } from '../firebase';
 
 interface WithdrawRequest {
   id: string;
@@ -14,8 +14,18 @@ interface WithdrawRequest {
   bankName: string;
   accountName: string;
   accountNumber: string;
-  status: 'PENDING' | 'COMPLETED';
-  createdAt: any;
+  status: 'PENDING' | 'COMPLETED' | 'REJECTED';
+  createdAt?: Timestamp | Date | { seconds?: number } | null;
+}
+
+function formatCreatedAt(value: WithdrawRequest['createdAt']): string {
+  if (!value) return 'Mới tạo';
+  if (value instanceof Date) return value.toLocaleString('vi-VN');
+  if (value instanceof Timestamp) return value.toDate().toLocaleString('vi-VN');
+  if (typeof value.seconds === 'number') {
+    return new Date(value.seconds * 1000).toLocaleString('vi-VN');
+  }
+  return 'Mới tạo';
 }
 
 export default function AdminDashboard() {
@@ -24,11 +34,11 @@ export default function AdminDashboard() {
   const [searchTerm, setSearchTerm] = useState('');
 
   useEffect(() => {
-    const q = query(collection(db, 'withdraw_requests'), orderBy('createdAt', 'desc'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const data = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
+    const requestsQuery = query(collection(db, 'withdraw_requests'), orderBy('createdAt', 'desc'));
+    const unsubscribe = onSnapshot(requestsQuery, (snapshot) => {
+      const data = snapshot.docs.map((requestDoc) => ({
+        id: requestDoc.id,
+        ...requestDoc.data(),
       })) as WithdrawRequest[];
       setRequests(data);
       setLoading(false);
@@ -37,26 +47,51 @@ export default function AdminDashboard() {
     return () => unsubscribe();
   }, []);
 
-  const handleMarkAsCompleted = async (reqId: string) => {
-    if (!window.confirm("Xác nhận đã chuyển khoản cho tác giả này?")) return;
+  const handleMarkAsCompleted = async (requestId: string) => {
+    if (!window.confirm('Xác nhận đã chuyển khoản cho tác giả này?')) return;
+
     try {
-      await updateDoc(doc(db, 'withdraw_requests', reqId), {
-        status: 'COMPLETED'
+      const currentUser = auth.currentUser;
+      if (!currentUser) {
+        alert('Vui lòng đăng nhập admin.');
+        return;
+      }
+
+      const idToken = await currentUser.getIdToken();
+      const response = await fetch('/api/admin/withdraw/review', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({
+          requestId,
+          status: 'COMPLETED',
+        }),
       });
-      alert('Đã duyệt lệnh rút tiền!');
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Withdraw review failed');
+      }
+
+      alert('Đã duyệt lệnh rút tiền.');
     } catch (error) {
       console.error(error);
       alert('Lỗi cập nhật trạng thái.');
     }
   };
 
-  const filteredRequests = requests.filter(req => 
-    req.userName.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    req.userEmail.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    (req.accountNumber || '').includes(searchTerm)
-  );
+  const filteredRequests = requests.filter((request) => {
+    const keyword = searchTerm.toLowerCase();
+    return (
+      request.userName.toLowerCase().includes(keyword)
+      || request.userEmail.toLowerCase().includes(keyword)
+      || (request.accountNumber || '').includes(searchTerm)
+    );
+  });
 
-  const pendingCount = requests.filter(r => r.status === 'PENDING').length;
+  const pendingCount = requests.filter((request) => request.status === 'PENDING').length;
 
   if (loading) {
     return (
@@ -88,7 +123,7 @@ export default function AdminDashboard() {
             <p className="text-4xl font-black text-text-main">{pendingCount}</p>
           </div>
         </div>
-        
+
         <div className="bg-surface p-6 rounded-[32px] border border-accent/10 shadow-xl flex items-center gap-6">
           <div className="size-14 rounded-2xl bg-green-500/10 text-green-500 flex items-center justify-center">
             <CheckCircle2 className="size-6" />
@@ -116,14 +151,14 @@ export default function AdminDashboard() {
             <h2 className="text-xl font-black text-text-main uppercase tracking-widest">Danh sách Yêu cầu Rút tiền</h2>
             <p className="text-sm text-muted">Xử lý các yêu cầu chuyển đổi doanh thu của tác giả.</p>
           </div>
-          
+
           <div className="relative w-full md:w-80">
             <Search className="absolute left-4 top-1/2 -translate-y-1/2 size-5 text-muted" />
-            <input 
-              type="text" 
-              placeholder="Tìm tên, email, STK..." 
+            <input
+              type="text"
+              placeholder="Tìm tên, email, STK..."
               value={searchTerm}
-              onChange={e => setSearchTerm(e.target.value)}
+              onChange={(event) => setSearchTerm(event.target.value)}
               className="w-full h-12 pl-12 pr-6 bg-background-light rounded-full border-none outline-none font-bold text-text-main focus:ring-2 focus:ring-primary/20 transition-all text-sm"
             />
           </div>
@@ -135,40 +170,40 @@ export default function AdminDashboard() {
               <tr className="bg-background-light text-[10px] uppercase tracking-widest text-muted border-b border-accent/10">
                 <th className="px-6 py-4 font-black">Thời gian</th>
                 <th className="px-6 py-4 font-black">Tác giả</th>
-                <th className="px-6 py-4 font-black text-right">Số VĐN / Xu</th>
+                <th className="px-6 py-4 font-black text-right">Số VND / Xu</th>
                 <th className="px-6 py-4 font-black text-center">Ngân hàng</th>
-                <th className="px-6 py-4 font-black">STK & CTK</th>
+                <th className="px-6 py-4 font-black">STK và CTK</th>
                 <th className="px-6 py-4 font-black text-center">Trạng thái</th>
                 <th className="px-6 py-4 font-black text-center">Hành động</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-accent/5">
-              {filteredRequests.map(req => (
-                <tr key={req.id} className="hover:bg-primary/5 transition-colors group">
+              {filteredRequests.map((request) => (
+                <tr key={request.id} className="hover:bg-primary/5 transition-colors group">
                   <td className="px-6 py-4">
                     <span className="text-xs font-bold text-muted">
-                      {req.createdAt ? new Date(req.createdAt.seconds * 1000).toLocaleString('vi-VN') : 'Mới tạo'}
+                      {formatCreatedAt(request.createdAt)}
                     </span>
                   </td>
                   <td className="px-6 py-4">
-                    <p className="text-sm font-black text-text-main">{req.userName}</p>
-                    <p className="text-[10px] text-muted">{req.userEmail}</p>
+                    <p className="text-sm font-black text-text-main">{request.userName}</p>
+                    <p className="text-[10px] text-muted">{request.userEmail}</p>
                   </td>
                   <td className="px-6 py-4 text-right">
-                    <p className="text-lg font-black text-primary tracking-tighter">{req.amountVND.toLocaleString()} đ</p>
-                    <p className="text-[10px] font-bold text-muted">{req.amountXu.toLocaleString()} Xu</p>
+                    <p className="text-lg font-black text-primary tracking-tighter">{request.amountVND.toLocaleString()} đ</p>
+                    <p className="text-[10px] font-bold text-muted">{request.amountXu.toLocaleString()} Xu</p>
                   </td>
                   <td className="px-6 py-4 text-center">
                     <span className="px-3 py-1 bg-background-light rounded-lg text-xs font-bold text-text-main">
-                      {req.bankName || 'Chưa cập nhật'}
+                      {request.bankName || 'Chưa cập nhật'}
                     </span>
                   </td>
                   <td className="px-6 py-4">
-                    <p className="text-base font-black text-text-main tracking-widest">{req.accountNumber || '?'}</p>
-                    <p className="text-xs font-bold text-muted uppercase">{req.accountName || 'CHƯA CẬP NHẬT'}</p>
+                    <p className="text-base font-black text-text-main tracking-widest">{request.accountNumber || '?'}</p>
+                    <p className="text-xs font-bold text-muted uppercase">{request.accountName || 'CHƯA CẬP NHẬT'}</p>
                   </td>
                   <td className="px-6 py-4 text-center">
-                    {req.status === 'COMPLETED' ? (
+                    {request.status === 'COMPLETED' ? (
                       <span className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-widest text-green-500 bg-green-500/10 px-3 py-1 rounded-full">
                         <CheckCircle2 className="size-3" /> Đã duyệt
                       </span>
@@ -179,9 +214,9 @@ export default function AdminDashboard() {
                     )}
                   </td>
                   <td className="px-6 py-4 text-center">
-                    {req.status === 'PENDING' && (
-                      <button 
-                        onClick={() => handleMarkAsCompleted(req.id)}
+                    {request.status === 'PENDING' && (
+                      <button
+                        onClick={() => handleMarkAsCompleted(request.id)}
                         className="px-4 py-2 bg-primary text-white text-xs font-black uppercase tracking-widest rounded-xl hover:opacity-90 transition-all opacity-0 group-hover:opacity-100"
                       >
                         Đã chuyển

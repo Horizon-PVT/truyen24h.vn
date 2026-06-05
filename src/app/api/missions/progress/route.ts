@@ -1,62 +1,52 @@
-/**
- * POST /api/missions/progress
- *
- * Increments a user's progress for a given mission today. Idempotent
- * per (mission, dedupKey) — passing a dedupKey (e.g. 'chapter:abc123')
- * prevents the same event from incrementing twice.
- *
- * Body: { uid: string, missionId: string, dedupKey?: string, delta?: number }
- *
- * Auth: trust the uid; this endpoint is rate-limited by the dedupKey
- * pattern and the small reward per mission. Don't use it for anything
- * that grants more than a few xu per claim.
- */
-import { NextRequest, NextResponse } from 'next/server';
-import { adminDb, serverTimestamp, FieldValue } from '@/lib/firebaseAdmin';
-import { missionById, todayKey } from '@/lib/missions';
+import { NextResponse } from 'next/server';
+import { requireFirebaseUser } from '@/lib/apiAuth';
+import { adminDb, FieldValue } from '@/lib/firebaseAdmin';
 
-export const runtime = 'nodejs';
+type MissionProgressBody = {
+  missionId?: unknown;
+  eventType?: unknown;
+};
 
-export async function POST(req: NextRequest) {
+function readMissionId(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const missionId = value.trim();
+  if (!/^[a-zA-Z0-9_-]{1,80}$/.test(missionId)) return null;
+  return missionId;
+}
+
+export async function POST(request: Request) {
+  const auth = await requireFirebaseUser(request);
+  if (!auth.ok) return auth.response;
+
+  let body: MissionProgressBody;
   try {
-    const body = await req.json().catch(() => ({}));
-    const uid = body.uid as string | undefined;
-    const missionId = body.missionId as string | undefined;
-    const dedupKey = (body.dedupKey as string | undefined) || null;
-    const delta = Math.max(1, Math.min(Number(body.delta) || 1, 10));
+    body = (await request.json()) as MissionProgressBody;
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
 
-    if (!uid || !missionId) return NextResponse.json({ error: 'Missing uid or missionId' }, { status: 400 });
-    const mission = missionById(missionId);
-    if (!mission) return NextResponse.json({ error: 'Unknown mission' }, { status: 400 });
+  const missionId = readMissionId(body.missionId);
+  if (!missionId) {
+    return NextResponse.json({ error: 'Missing missionId' }, { status: 400 });
+  }
 
-    const db = adminDb();
-    const date = todayKey();
-    const progressRef = db.doc(`users/${uid}/daily_missions/${date}/progress/${missionId}`);
+  const eventType = typeof body.eventType === 'string' ? body.eventType.slice(0, 80) : 'manual';
+  const uid = auth.user.uid;
+  const missionRef = adminDb().doc(`users/${uid}/missions/${missionId}`);
 
-    const result = await db.runTransaction(async (tx) => {
-      const snap = await tx.get(progressRef);
-      const data = (snap.exists ? snap.data() : {}) as any;
-
-      // Dedup check: if this dedupKey has been counted already, no-op.
-      if (dedupKey && Array.isArray(data.dedupKeys) && data.dedupKeys.includes(dedupKey)) {
-        return { count: data.count || 0, alreadyCounted: true };
-      }
-
-      const newCount = Math.min((data.count || 0) + delta, mission.goal);
-
-      tx.set(progressRef, {
+  try {
+    await missionRef.set(
+      {
         missionId,
-        count: newCount,
-        ...(dedupKey ? { dedupKeys: FieldValue.arrayUnion(dedupKey) } : {}),
-        updatedAt: serverTimestamp(),
-        ...(snap.exists ? {} : { createdAt: serverTimestamp(), claimed: false }),
-      }, { merge: true });
-      return { count: newCount, alreadyCounted: false };
-    });
+        progress: FieldValue.increment(1),
+        lastEventType: eventType,
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
 
-    return NextResponse.json({ ok: true, ...result, goal: mission.goal });
-  } catch (err: any) {
-    console.error('[missions/progress] error', err);
-    return NextResponse.json({ error: err.message || 'Progress update failed' }, { status: 500 });
+    return NextResponse.json({ ok: true });
+  } catch {
+    return NextResponse.json({ error: 'Mission progress update failed' }, { status: 500 });
   }
 }
