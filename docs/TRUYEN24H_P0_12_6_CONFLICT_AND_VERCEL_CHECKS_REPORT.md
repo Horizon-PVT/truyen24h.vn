@@ -172,6 +172,25 @@ git push origin p0-security-hardening-integration
 
 No force push was used.
 
+## Post-Push PR Status
+
+After pushing conflict-resolution commits, PR #2 was re-checked through the GitHub connector.
+
+- PR state: open
+- Merged: no
+- Mergeable: true
+- Head SHA after push: `8707cd328e3af2958d09c2b6a1efe964a00befa0`
+- Merge commit SHA reported by GitHub: `d7abcd8bedb0867032f62e5a1ae03cc2e0512dd6`
+
+Post-push Vercel status for head `8707cd328e3af2958d09c2b6a1efe964a00befa0`:
+
+- `Vercel - webtruyenhay-next`: pending
+  - https://vercel.com/pham-tungs-projects-09cdcc5e/webtruyenhay-next/GyFqoSJffqokAAitDu5ekmh4crg8
+- `Vercel - truyen24h-vn`: pending
+  - https://vercel.com/pham-tungs-projects-09cdcc5e/truyen24h-vn/Eu3XTK9qCEkZsjEENoHZoN4YUerE
+
+The original failed Vercel checks were replaced by new pending deployments after the push. If either check fails again, Vercel dashboard access is still required for the exact log-level failure reason.
+
 ## Safety Confirmations
 
 - No merge of PR #2 occurred.
@@ -185,18 +204,18 @@ No force push was used.
 
 ## Final Gate
 
-`MANUAL_VERCEL_ACCESS_REQUIRED`
+`MERGE_CONFLICT_RESOLVED_VERCEL_PENDING`
 
-The merge conflict has been resolved locally and pushed, and local validation is acceptable. Remaining blocker is Vercel failure diagnosis/check status, which requires owner/Vercel dashboard access or updated Vercel logs after the new push.
+The merge conflict has been resolved and pushed. PR #2 now reports `mergeable: true`. Remaining status is Vercel checks pending on the new head commit.
 
 ## Recommended Next Task
 
-P0.12.7 - Re-check PR #2 after conflict-resolution push and inspect Vercel dashboard logs with owner access.
+P0.12.7 - Re-check PR #2 Vercel checks after pending deployments complete.
 
 Recommended checks:
 
-1. Confirm PR #2 no longer reports merge conflicts.
-2. Confirm whether the new Vercel deployments are pending, passing, or failing.
+1. Confirm PR #2 still reports no merge conflicts.
+2. Confirm whether the new Vercel deployments pass or fail.
 3. If Vercel fails, inspect logs for the exact failure reason.
 4. If only the legacy `webtruyenhay-next` project fails, decide whether that check should be removed/ignored from branch protection.
 5. If `truyen24h-vn` fails, fix only the confirmed deployment issue with owner approval.
