@@ -148,3 +148,69 @@ https://github.com/Horizon-PVT/truyen24h.vn/compare/master...p0-security-hardeni
 P0.12.5 Owner PR review and code-only deploy decision.
 
 If the owner wants Codex to create the PR directly, the GitHub connector account needs collaborator permission on `Horizon-PVT/truyen24h.vn`, or GitHub CLI must be installed and authenticated locally.
+
+---
+
+## Follow-up Attempt: 2026-06-05 21:05:14 +07:00
+
+Task: create GitHub PR for already-pushed branch `p0-security-hardening-integration`.
+
+### Remote / Branch Confirmation
+
+- `git fetch origin`: pass after elevated Git permission for `.git/FETCH_HEAD`.
+- `git branch -a`: confirmed `remotes/origin/p0-security-hardening-integration` exists.
+- `git branch --show-current`: `p0-security-hardening-integration`.
+- `git status -sb`: branch is aligned with `origin/p0-security-hardening-integration`; only `.codex-smoke/` and `push-to-github.ps1` remain untracked and were not touched.
+
+### Validation
+
+- `node scripts/security-smoke-tests/security-smoke.mjs`: pass, 14/14.
+- `npx.cmd tsc --noEmit --pretty false`: pass.
+- `npm.cmd run build`: pass.
+- `npm.cmd run lint`: fail with known full-repo lint debt, 114 errors / 93 warnings.
+
+### PR Creation Attempt
+
+PR created: no.
+
+GitHub connector attempt:
+
+- Repository: `Horizon-PVT/truyen24h.vn`
+- Base: `master`
+- Head: `p0-security-hardening-integration`
+- Result: failed with GitHub API 422: `must be a collaborator`.
+
+Browser fallback:
+
+- Opened compare URL successfully:
+  `https://github.com/Horizon-PVT/truyen24h.vn/compare/master...p0-security-hardening-integration?expand=1`
+- Browser page loaded but GitHub was signed out.
+- PR could not be created without a signed-in GitHub session or collaborator-authorized connector.
+
+### Safety Confirmation
+
+- Runtime code changed: no.
+- Firestore rules changed: no.
+- Package/env files changed: no.
+- Deploy occurred: no.
+- Firestore rules deployed: no.
+- PR merged: no.
+- Secrets printed: no.
+- PayOS triggered: no.
+- Money sent: no.
+
+### Current Gate
+
+`PR_CREATION_FAILED_MANUAL_LINK_REQUIRED`
+
+Manual PR URL:
+
+```text
+https://github.com/Horizon-PVT/truyen24h.vn/compare/master...p0-security-hardening-integration?expand=1
+```
+
+To let Codex create the PR directly, one of these is required:
+
+- Sign in to GitHub in the browser session with an account allowed to create PRs for `Horizon-PVT/truyen24h.vn`.
+- Grant collaborator permission to the GitHub connector account.
+- Install and authenticate `gh` locally, then rerun PR creation.
