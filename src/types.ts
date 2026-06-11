@@ -27,6 +27,7 @@ export interface Novel {
   isFull?: boolean;
   translationGroup?: string;
   latestChapterNumber?: number;
+  aiAssisted?: boolean;
   createdAt?: any;
   updatedAt?: any;
 }

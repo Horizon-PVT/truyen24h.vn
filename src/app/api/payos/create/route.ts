@@ -1,131 +1,178 @@
-/**
- * Create a PayOS payment link AND the matching Firestore order doc.
- *
- *   POST /api/payos/create
- *   Body: { uid, packId, vnd, coins, isMonthly?, returnUrl?, cancelUrl? }
- *
- * Why server-side order creation:
- *   Previously /vip page created the order doc client-side with the
- *   Firestore client SDK. That meant anyone could write arbitrary `coins`
- *   values to the order before triggering checkout, and the webhook
- *   would credit those coins on confirmation. Routing through this
- *   endpoint lets us enforce that (coins, vnd, packId) come from a
- *   server-trusted catalog instead of user input.
- *
- *   Important: only the webhook flips status to PAID. This route only
- *   ever writes status=PENDING. So even if a user fabricates the
- *   request, no coins are credited until PayOS confirms payment.
- */
 import { NextResponse } from 'next/server';
 import { payos } from '@/services/payos';
-import { adminDb } from '@/lib/firebaseAdmin';
 import { getSiteUrl } from '@/lib/site';
-import { FieldValue } from 'firebase-admin/firestore';
+import { requireFirebaseUser } from '@/lib/apiAuth';
+import { adminDb, FieldValue } from '@/lib/firebaseAdmin';
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
-
-/**
- * Server-trusted catalog. Keep this in sync with `PACKAGES` in /src/app/vip/page.tsx.
- * Coins = base + bonus pre-computed here so the client can't inflate it.
- */
-const CATALOG: Record<string, { vnd: number; coins: number; isMonthly?: boolean }> = {
-  pack0: { vnd: 5000, coins: 70 },        // 60 + 10 starter
-  pack1: { vnd: 10000, coins: 100 },
-  pack2: { vnd: 20000, coins: 220 },      // 200 + 20 popular
-  pack3: { vnd: 50000, coins: 600 },      // 500 + 100
-  monthly: { vnd: 99000, coins: 1800, isMonthly: true }, // 1500 + 300 + 30d VIP
-  pack4: { vnd: 100000, coins: 1300 },    // 1000 + 300
-  pack5: { vnd: 200000, coins: 2800 },    // 2000 + 800 VIP
+type PaymentPack = {
+  id: string;
+  amount: number;
+  coins: number;
+  isMonthly: boolean;
+  title: string;
+  description: string;
+  vipDays?: number;
 };
 
+const PAYMENT_PACKS: Record<string, PaymentPack> = {
+  pack0: {
+    id: 'pack0',
+    amount: 5000,
+    coins: 70,
+    isMonthly: false,
+    title: 'Goi khoi dau',
+    description: 'Nap 70 Xu',
+  },
+  pack1: {
+    id: 'pack1',
+    amount: 10000,
+    coins: 100,
+    isMonthly: false,
+    title: 'Goi 100 Xu',
+    description: 'Nap 100 Xu',
+  },
+  pack2: {
+    id: 'pack2',
+    amount: 20000,
+    coins: 220,
+    isMonthly: false,
+    title: 'Goi pho bien',
+    description: 'Nap 220 Xu',
+  },
+  pack3: {
+    id: 'pack3',
+    amount: 50000,
+    coins: 600,
+    isMonthly: false,
+    title: 'Goi 600 Xu',
+    description: 'Nap 600 Xu',
+  },
+  monthly: {
+    id: 'monthly',
+    amount: 99000,
+    coins: 1800,
+    isMonthly: true,
+    vipDays: 30,
+    title: 'Combo thang',
+    description: 'VIP thang va 1800 Xu',
+  },
+  pack4: {
+    id: 'pack4',
+    amount: 100000,
+    coins: 1300,
+    isMonthly: false,
+    title: 'Goi 1300 Xu',
+    description: 'Nap 1300 Xu',
+  },
+  pack5: {
+    id: 'pack5',
+    amount: 200000,
+    coins: 2800,
+    isMonthly: false,
+    title: 'Goi toi da',
+    description: 'Nap 2800 Xu',
+  },
+};
+
+type CreatePayOSBody = {
+  packId?: unknown;
+};
+
+function readPackId(body: CreatePayOSBody): string | null {
+  if (typeof body.packId !== 'string') return null;
+  const packId = body.packId.trim();
+  return PAYMENT_PACKS[packId] ? packId : null;
+}
+
+function createOrderCode(): number {
+  const randomPart = Math.floor(Math.random() * 1000);
+  return Date.now() * 1000 + randomPart;
+}
+
 export async function POST(request: Request) {
+  const auth = await requireFirebaseUser(request);
+  if (!auth.ok) return auth.response;
+
+  let body: CreatePayOSBody;
   try {
-    const body = await request.json();
-    const { uid, packId } = body;
-    let { orderCode, returnUrl, cancelUrl } = body;
+    body = (await request.json()) as CreatePayOSBody;
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
 
-    if (!uid || typeof uid !== 'string') {
-      return NextResponse.json({ error: 'Missing uid' }, { status: 400 });
-    }
+  const packId = readPackId(body);
+  if (!packId) {
+    return NextResponse.json({ error: 'Invalid packId' }, { status: 400 });
+  }
 
-    // Allow legacy callers that still pass raw amount/coins. We log a
-    // warning so we know when the /vip page is still using the old path.
-    let vnd: number;
-    let coins: number;
-    let isMonthly = false;
+  const pack = PAYMENT_PACKS[packId];
+  const orderCode = createOrderCode();
+  const siteUrl = getSiteUrl();
+  const returnUrl = `${siteUrl}/vip?payment=success&orderCode=${orderCode}`;
+  const cancelUrl = `${siteUrl}/vip?payment=cancelled&orderCode=${orderCode}`;
+  const orderRef = adminDb().doc(`orders/${orderCode}`);
 
-    if (packId && CATALOG[packId]) {
-      vnd = CATALOG[packId].vnd;
-      coins = CATALOG[packId].coins;
-      isMonthly = !!CATALOG[packId].isMonthly;
-    } else if (body.amount && body.coins) {
-      console.warn(
-        `[PayOS] legacy payload — packId missing, trusting client amount=${body.amount}`,
-      );
-      vnd = Number(body.amount);
-      coins = Number(body.coins);
-      isMonthly = !!body.isMonthly;
-    } else {
-      return NextResponse.json(
-        { error: 'Missing packId or {amount,coins}' },
-        { status: 400 },
-      );
-    }
+  try {
+    await orderRef.set({
+      uid: auth.user.uid,
+      email: auth.user.email || '',
+      packId: pack.id,
+      amount: pack.amount,
+      coins: pack.coins,
+      isMonthly: pack.isMonthly,
+      vipDays: pack.vipDays || 0,
+      title: pack.title,
+      description: pack.description,
+      orderCode,
+      status: 'PENDING',
+      provider: 'payos',
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
 
-    // PayOS orderCode must be a positive int. Use 9 digits of ms-time
-    // for collision-free uniqueness within a year.
-    if (!orderCode) {
-      orderCode = Number(String(Date.now()).slice(-9));
-    }
-
-    // Idempotency: if we already created this order doc don't double-write.
-    const db = adminDb();
-    const orderRef = db.collection('orders').doc(String(orderCode));
-    const existing = await orderRef.get();
-    if (existing.exists && existing.data()?.status === 'PAID') {
-      return NextResponse.json(
-        { error: 'Order already paid' },
-        { status: 409 },
-      );
-    }
+    const paymentLink = await payos.paymentRequests.create({
+      orderCode,
+      amount: pack.amount,
+      description: `T24H ${orderCode}`,
+      cancelUrl,
+      returnUrl,
+      items: [
+        {
+          name: pack.title,
+          quantity: 1,
+          price: pack.amount,
+        },
+      ],
+      buyerEmail: auth.user.email,
+    });
 
     await orderRef.set(
       {
-        uid,
-        amount: vnd,
-        coins,
-        packId: packId || null,
-        isMonthly,
-        status: 'PENDING',
-        createdAt: FieldValue.serverTimestamp(),
-        gateway: 'payos',
+        paymentLinkId: paymentLink.paymentLinkId,
+        checkoutUrl: paymentLink.checkoutUrl,
+        qrCode: paymentLink.qrCode,
+        payosStatus: paymentLink.status,
+        updatedAt: FieldValue.serverTimestamp(),
       },
-      { merge: true },
+      { merge: true }
     );
-
-    const siteUrl = getSiteUrl();
-    const payload = {
-      orderCode,
-      amount: vnd,
-      description: `WXU ${orderCode}`.slice(0, 25),
-      cancelUrl: cancelUrl || `${siteUrl}/vip?payment=cancelled`,
-      returnUrl: returnUrl || `${siteUrl}/vip?payment=success`,
-    };
-
-    const paymentLinkRes = await payos.paymentRequests.create(payload);
 
     return NextResponse.json({
-      ...paymentLinkRes,
       orderCode,
-      coins,
-      isMonthly,
+      checkoutUrl: paymentLink.checkoutUrl,
+      qrCode: paymentLink.qrCode,
+      amount: pack.amount,
+      coins: pack.coins,
+      isMonthly: pack.isMonthly,
     });
-  } catch (error: any) {
-    console.error('[PayOS Create] error:', error);
-    return NextResponse.json(
-      { error: error?.message || 'Lỗi kết nối PayOS' },
-      { status: 500 },
+  } catch {
+    await orderRef.set(
+      {
+        status: 'CREATE_FAILED',
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
     );
+    return NextResponse.json({ error: 'PayOS payment link creation failed' }, { status: 500 });
   }
 }

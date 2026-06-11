@@ -22,8 +22,8 @@ export const runtime = 'nodejs';
 export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
-  const auth = authorizeAdmin(req);
-  if (!auth.ok) return NextResponse.json({ error: auth.reason }, { status: 401 });
+  const auth = await authorizeAdmin(req);
+  if (!auth.ok) return NextResponse.json({ error: auth.reason }, { status: auth.status || 401 });
 
   try {
     const body = await req.json().catch(() => ({}));
