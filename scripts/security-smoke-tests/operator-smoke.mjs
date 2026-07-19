@@ -176,6 +176,58 @@ function checkRollbackChapterGuard() {
   );
 }
 
+function checkApproveTransitions() {
+  const content = read(files.approveRoute);
+  const required = [
+    'transaction.get(draftRef)',
+    "currentStatus === 'PUBLISHED'",
+    'currentStatus === newStatus',
+    'idempotent: true',
+  ];
+  return result(
+    'approve API transition rules are verified',
+    includesAll(content, required),
+    'Approve route must perform read inside transaction, block transition from PUBLISHED, and support idempotent success when new status matches current status'
+  );
+}
+
+function checkPublishIdempotentAndConflict() {
+  const content = read(files.publishRoute);
+  const required = [
+    'transaction.get(draftRef)',
+    'transaction.get(targetRef)',
+    'publishedFromDraftId',
+    'publishedFromDraftId === draftId',
+    'idempotent: true',
+    'publishedFromDraftId !== draftId',
+    'Conflict',
+    '409',
+  ];
+  return result(
+    'publish API enforces idempotency and blocks target overwrites by other drafts',
+    includesAll(content, required),
+    'Publish route must check target document existence and publishedFromDraftId inside transaction, return 409 on draft mismatch, and return idempotent success if already published by same draft'
+  );
+}
+
+function checkRollbackIdempotentAndConflict() {
+  const content = read(files.rollbackRoute);
+  const required = [
+    'transaction.get(publishLogRef)',
+    'transaction.get(targetRef)',
+    "logData.status === 'ROLLED_BACK'",
+    "logData.status !== 'ACTIVE'",
+    'publishedFromDraftId !== draftId',
+    '409',
+    "status: 'ROLLED_BACK'",
+  ];
+  return result(
+    'rollback API validates active status, owner draft ID, and updates log status',
+    includesAll(content, required),
+    'Rollback route must check publish log status ACTIVE/ROLLED_BACK, check publishedFromDraftId match inside transaction, update log status to ROLLED_BACK, and avoid rollback of hijacked documents'
+  );
+}
+
 const results = [
   checkApproveRoute(),
   checkPublishRoute(),
@@ -184,11 +236,14 @@ const results = [
   checkVisibilityGuard(),
   checkPublicVisibilityApplied(),
   checkRollbackChapterGuard(),
+  checkApproveTransitions(),
+  checkPublishIdempotentAndConflict(),
+  checkRollbackIdempotentAndConflict(),
 ];
 
 const failed = results.filter((item) => !item.passed);
 
-console.log('=== OPERATOR PHASE 2.5 SMOKE TESTS ===');
+console.log('=== OPERATOR PHASE 2.8D SMOKE TESTS ===');
 for (const item of results) {
   const marker = item.passed ? 'PASS' : 'FAIL';
   console.log(`${marker} ${item.name}`);

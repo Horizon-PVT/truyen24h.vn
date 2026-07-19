@@ -7,9 +7,3 @@
 [functions]
   directory = "netlify/functions"
   node_bundler = "nft"
-  # Set function timeout configuration (maximum allowed on Netlify plans)
-  timeout = 60
-
-# Daily Run Cron Scheduled Function configuration
-[functions."daily-run-cron"]
-  schedule = "0 1 * * *"

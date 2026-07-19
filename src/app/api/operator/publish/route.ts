@@ -20,186 +20,201 @@ export async function POST(req: NextRequest) {
 
   const db = adminDb();
   const draftRef = db.collection('operator_drafts').doc(draftId);
-  const draftDoc = await draftRef.get();
-
-  if (!draftDoc.exists) {
-    return NextResponse.json({ error: 'Draft not found' }, { status: 404 });
-  }
-
-  const draftData = draftDoc.data();
-  if (!draftData) {
-    return NextResponse.json({ error: 'Draft content is empty' }, { status: 500 });
-  }
-
-  if (draftData.status !== 'APPROVED') {
-    return NextResponse.json({ error: `Only APPROVED drafts can be published. Current status is ${draftData.status}` }, { status: 400 });
-  }
-
-  const type = draftData.type;
-  const adminEmail = auth.email || auth.uid || 'admin';
-  const now = FieldValue.serverTimestamp();
-
   const publishLogRef = db.collection('operator_publish_logs').doc();
 
   try {
-    if (type === 'blog') {
-      const targetDocId = draftData.targetDocId || draftData.slug || slugifyWithSuffix(draftData.title);
-      const postDoc = {
-        title: draftData.title,
-        contentMarkdown: draftData.content,
-        excerpt: draftData.summary || draftData.metadata?.excerpt || '',
-        coverUrl: draftData.metadata?.coverUrl || '',
-        coverPrompt: draftData.metadata?.coverPrompt || '',
-        tags: draftData.metadata?.tags || [],
-        kind: draftData.metadata?.kind || 'review',
-        relatedNovelSlug: draftData.metadata?.relatedNovelSlug || null,
-        genre: draftData.metadata?.genre || null,
-        createdAt: now,
-        updatedAt: now,
-        aiAssisted: true,
-        publishedBy: adminEmail,
-      };
+    const result = await db.runTransaction(async (transaction: any) => {
+      const draftDoc = await transaction.get(draftRef);
+      if (!draftDoc.exists) {
+        return { error: 'Draft not found', status: 404 };
+      }
 
-      const blogRef = db.collection('blog_posts').doc(targetDocId);
-      const publishLog = {
-        draftId,
-        type,
-        targetCollection: 'blog_posts',
-        targetDocId,
-        targetParentId: null,
-        publishedBy: adminEmail,
-        createdAt: now,
-      };
+      const draftData = draftDoc.data();
+      if (!draftData) {
+        return { error: 'Draft content is empty', status: 500 };
+      }
 
-      await db.runTransaction(async (transaction: any) => {
-        transaction.set(blogRef, postDoc, { merge: true });
-        transaction.update(draftRef, {
-          status: 'PUBLISHED',
-          updatedAt: now,
+      // Check if draft is already published
+      if (draftData.status === 'PUBLISHED') {
+        const targetDocId = draftData.targetDocId;
+        const type = draftData.type;
+        const targetParentId = draftData.targetParentId || null;
+        return {
+          ok: true,
+          type,
           targetDocId,
-          lastPublishLogId: publishLogRef.id,
-        });
-        transaction.set(publishLogRef, publishLog);
-      });
+          targetParentId,
+          publishLogId: draftData.lastPublishLogId || null,
+          idempotent: true,
+        };
+      }
 
-      return NextResponse.json({ ok: true, type, targetDocId, publishLogId: publishLogRef.id });
+      if (draftData.status !== 'APPROVED') {
+        return {
+          error: `Only APPROVED drafts can be published. Current status is ${draftData.status}`,
+          status: 400,
+        };
+      }
 
-    } else if (type === 'story') {
-      const targetDocId = draftData.targetDocId || draftData.slug || (slugify(draftData.title) + '-' + Date.now().toString(36));
-      const novelDoc = {
-        id: targetDocId,
-        title: draftData.title,
-        author: draftData.metadata?.author || 'Tác giả AI',
-        authorId: draftData.metadata?.authorId || 'system-ai',
-        description: draftData.content,
-        coverUrl: draftData.metadata?.coverUrl || '',
-        bannerUrl: draftData.metadata?.bannerUrl || '',
-        genres: draftData.metadata?.genres || [],
-        status: 'Đang ra',
-        views: '0',
-        rating: 0,
-        isHot: draftData.metadata?.isHot ?? true,
-        isFull: false,
-        lastUpdated: new Date().toISOString(),
-        latestChapterNumber: 0,
-        tags: draftData.metadata?.tags || [],
-        aiAssisted: true,
-        hook: draftData.metadata?.hook || '',
-        coverPrompt: draftData.metadata?.coverPrompt || '',
-        publishedBy: adminEmail,
-        createdAt: now,
-        updatedAt: now,
-      };
+      const type = draftData.type;
+      const adminEmail = auth.email || auth.uid || 'admin';
+      const now = FieldValue.serverTimestamp();
 
-      const novelRef = db.collection('novels').doc(targetDocId);
-      const publishLog = {
-        draftId,
-        type,
-        targetCollection: 'novels',
-        targetDocId,
-        targetParentId: null,
-        publishedBy: adminEmail,
-        createdAt: now,
-      };
+      let targetRef;
+      let targetDocId = '';
+      let targetParentId = null;
+      let targetCollection = '';
+      let targetDocData: any = {};
 
-      await db.runTransaction(async (transaction: any) => {
-        transaction.set(novelRef, novelDoc, { merge: true });
-        transaction.update(draftRef, {
-          status: 'PUBLISHED',
+      if (type === 'blog') {
+        targetDocId = draftData.targetDocId || draftData.slug || slugifyWithSuffix(draftData.title);
+        targetCollection = 'blog_posts';
+        targetRef = db.collection('blog_posts').doc(targetDocId);
+        targetDocData = {
+          title: draftData.title,
+          contentMarkdown: draftData.content,
+          excerpt: draftData.summary || draftData.metadata?.excerpt || '',
+          coverUrl: draftData.metadata?.coverUrl || '',
+          coverPrompt: draftData.metadata?.coverPrompt || '',
+          tags: draftData.metadata?.tags || [],
+          kind: draftData.metadata?.kind || 'review',
+          relatedNovelSlug: draftData.metadata?.relatedNovelSlug || null,
+          genre: draftData.metadata?.genre || null,
+          createdAt: now,
           updatedAt: now,
-          targetDocId,
-          lastPublishLogId: publishLogRef.id,
-        });
-        transaction.set(publishLogRef, publishLog);
-      });
+          aiAssisted: true,
+          publishedBy: adminEmail,
+          publishedFromDraftId: draftId,
+        };
+      } else if (type === 'story') {
+        targetDocId = draftData.targetDocId || draftData.slug || (slugify(draftData.title) + '-' + Date.now().toString(36));
+        targetCollection = 'novels';
+        targetRef = db.collection('novels').doc(targetDocId);
+        targetDocData = {
+          id: targetDocId,
+          title: draftData.title,
+          author: draftData.metadata?.author || 'Tác giả AI',
+          authorId: draftData.metadata?.authorId || 'system-ai',
+          description: draftData.content,
+          coverUrl: draftData.metadata?.coverUrl || '',
+          bannerUrl: draftData.metadata?.bannerUrl || '',
+          genres: draftData.metadata?.genres || [],
+          status: 'Đang ra',
+          views: '0',
+          rating: 0,
+          isHot: draftData.metadata?.isHot ?? true,
+          isFull: false,
+          lastUpdated: new Date().toISOString(),
+          latestChapterNumber: 0,
+          tags: draftData.metadata?.tags || [],
+          aiAssisted: true,
+          hook: draftData.metadata?.hook || '',
+          coverPrompt: draftData.metadata?.coverPrompt || '',
+          publishedBy: adminEmail,
+          createdAt: now,
+          updatedAt: now,
+          publishedFromDraftId: draftId,
+        };
+      } else if (type === 'chapter') {
+        targetParentId = draftData.targetParentId;
+        if (!targetParentId) {
+          return { error: 'Chapter draft is missing targetParentId', status: 400 };
+        }
+        const chapterNumberVal = draftData.metadata?.chapterNumber;
+        if (chapterNumberVal === undefined || chapterNumberVal === null) {
+          return { error: 'Chapter draft is missing chapterNumber in metadata', status: 400 };
+        }
+        const num = Number(chapterNumberVal);
+        if (isNaN(num)) {
+          return { error: `Invalid chapterNumber: ${chapterNumberVal}`, status: 400 };
+        }
+        targetDocId = `c${num}`;
+        targetCollection = `novels/${targetParentId}/chapters`;
+        targetRef = db.doc(`novels/${targetParentId}/chapters/${targetDocId}`);
 
-      return NextResponse.json({ ok: true, type, targetDocId, publishLogId: publishLogRef.id });
+        const isVip = typeof draftData.metadata?.isVip === 'boolean' ? draftData.metadata.isVip : num >= 4;
+        const price = isVip ? Number(draftData.metadata?.price) || 50 : 0;
 
-    } else if (type === 'chapter') {
-      const targetParentId = draftData.targetParentId;
-      if (!targetParentId) {
-        return NextResponse.json({ error: 'Chapter draft is missing targetParentId' }, { status: 400 });
+        targetDocData = {
+          id: targetDocId,
+          title: draftData.title,
+          content: draftData.content,
+          chapterNumber: num,
+          isVip,
+          price,
+          publishDate: now,
+          aiAssisted: true,
+          publishedFromDraftId: draftId,
+        };
+      } else {
+        return { error: `Unknown draft type: ${type}`, status: 400 };
       }
 
-      const chapterNumberVal = draftData.metadata?.chapterNumber;
-      if (chapterNumberVal === undefined || chapterNumberVal === null) {
-        return NextResponse.json({ error: 'Chapter draft is missing chapterNumber in metadata' }, { status: 400 });
+      // Check if target doc already exists
+      const targetDoc = await transaction.get(targetRef);
+      if (targetDoc.exists) {
+        const publishedFromDraftId = targetDoc.get('publishedFromDraftId');
+        if (publishedFromDraftId === draftId) {
+          // Idempotent retry
+          return {
+            ok: true,
+            type,
+            targetDocId,
+            targetParentId,
+            publishLogId: draftData.lastPublishLogId || null,
+            idempotent: true,
+          };
+        } else if (publishedFromDraftId !== draftId) {
+          // Conflict
+          return {
+            error: 'Target document already exists (published by another draft or source)',
+            status: 409,
+          };
+        }
       }
 
-      const num = Number(chapterNumberVal);
-      if (isNaN(num)) {
-        return NextResponse.json({ error: `Invalid chapterNumber: ${chapterNumberVal}` }, { status: 400 });
-      }
+      // Proceed with publishing
+      transaction.set(targetRef, targetDocData, { merge: true });
 
-      const isVip = typeof draftData.metadata?.isVip === 'boolean' ? draftData.metadata.isVip : num >= 4;
-      const price = isVip ? Number(draftData.metadata?.price) || 50 : 0;
-      const chapterId = `c${num}`;
-
-      const chapterDoc = {
-        id: chapterId,
-        title: draftData.title,
-        content: draftData.content,
-        chapterNumber: num,
-        isVip,
-        price,
-        publishDate: now,
-        aiAssisted: true,
-      };
-
-      const chapterRef = db.doc(`novels/${targetParentId}/chapters/${chapterId}`);
-      const novelRef = db.doc(`novels/${targetParentId}`);
-      
-      const publishLog = {
-        draftId,
-        type,
-        targetCollection: `novels/${targetParentId}/chapters`,
-        targetDocId: chapterId,
-        targetParentId,
-        publishedBy: adminEmail,
-        createdAt: now,
-      };
-
-      await db.runTransaction(async (transaction: any) => {
-        transaction.set(chapterRef, chapterDoc, { merge: true });
+      if (type === 'chapter' && targetParentId) {
+        const novelRef = db.doc(`novels/${targetParentId}`);
+        const chapterNumberVal = draftData.metadata?.chapterNumber;
+        const num = Number(chapterNumberVal);
         transaction.update(novelRef, {
           latestChapterNumber: num,
           updatedAt: now,
           lastUpdated: new Date().toISOString(),
         });
-        transaction.update(draftRef, {
-          status: 'PUBLISHED',
-          updatedAt: now,
-          targetDocId: chapterId,
-          lastPublishLogId: publishLogRef.id,
-        });
-        transaction.set(publishLogRef, publishLog);
+      }
+
+      const publishLog = {
+        draftId,
+        type,
+        targetCollection,
+        targetDocId,
+        targetParentId,
+        publishedBy: adminEmail,
+        createdAt: now,
+        status: 'ACTIVE',
+      };
+
+      transaction.set(publishLogRef, publishLog);
+
+      transaction.update(draftRef, {
+        status: 'PUBLISHED',
+        updatedAt: now,
+        targetDocId,
+        lastPublishLogId: publishLogRef.id,
       });
 
-      return NextResponse.json({ ok: true, type, targetDocId: chapterId, targetParentId, publishLogId: publishLogRef.id });
+      return { ok: true, type, targetDocId, targetParentId, publishLogId: publishLogRef.id };
+    });
 
-    } else {
-      return NextResponse.json({ error: `Unknown draft type: ${type}` }, { status: 400 });
+    if (result.error) {
+      return NextResponse.json({ error: result.error }, { status: result.status });
     }
+
+    return NextResponse.json(result);
   } catch (err: any) {
     console.error('[operator/publish] error', err);
     return NextResponse.json({ error: err.message || 'Publish failed' }, { status: 500 });

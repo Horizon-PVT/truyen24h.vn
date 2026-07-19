@@ -5,6 +5,7 @@
  * drafts only. No public novels/chapters/blog posts are published here.
  */
 import { NextRequest, NextResponse } from 'next/server';
+import { authorizeAdmin } from '@/lib/apiAuth';
 import { adminDb, serverTimestamp } from '@/lib/firebaseAdmin';
 import { discoverTrendingTopics, generateChapter, generateNovelOutline } from '@/services/aiStoryService';
 import { buildBannerUrl, buildCoverUrl } from '@/services/aiCoverService';
@@ -80,20 +81,33 @@ async function persistDailyRunReport(
 }
 
 export async function GET(req: NextRequest) {
-  const authHeader = req.headers.get('authorization') || '';
-  const provided = authHeader.replace(/^Bearer\s+/i, '').trim();
-  const cronSecret = process.env.CRON_SECRET;
-  const adminToken = process.env.ADMIN_API_TOKEN;
-  const ok =
-    (cronSecret && provided === cronSecret) ||
-    (adminToken && provided === adminToken);
-  if (!ok) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  return handleDailyRunCron(req);
+}
+
+export async function POST(req: NextRequest) {
+  return handleDailyRunCron(req);
+}
+
+async function handleDailyRunCron(req: NextRequest) {
+  const auth = await authorizeAdmin(req);
+  if (!auth.ok) {
+    return NextResponse.json({ error: auth.reason || 'Unauthorized' }, { status: auth.status || 401 });
   }
 
   const { searchParams } = new URL(req.url);
-  const newNovels = Math.min(Math.max(Number(searchParams.get('newNovels')) || 2, 0), 5);
-  const continueNovels = Math.min(Math.max(Number(searchParams.get('continueNovels')) || 5, 0), 20);
+  let newNovelsVal = Number(searchParams.get('newNovels'));
+  let continueNovelsVal = Number(searchParams.get('continueNovels'));
+
+  if (req.method === 'POST') {
+    try {
+      const body = await req.json().catch(() => ({}));
+      if (body.newNovels !== undefined) newNovelsVal = Number(body.newNovels);
+      if (body.continueNovels !== undefined) continueNovelsVal = Number(body.continueNovels);
+    } catch {}
+  }
+
+  const newNovels = Math.min(Math.max(newNovelsVal || 2, 0), 5);
+  const continueNovels = Math.min(Math.max(continueNovelsVal || 5, 0), 20);
   const db = adminDb();
   const createdBy = 'cron';
 

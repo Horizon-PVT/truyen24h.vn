@@ -224,6 +224,14 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    match /operator_quality_reports/{id} {
+      allow read, write: if false;
+    }
+
+    match /admin_audit_logs/{id} {
+      allow read, write: if false;
+    }
+
     // Fail closed for every other collection, especially unknown sensitive
     // payment, admin, automation, or revenue paths.
     match /{document=**} {

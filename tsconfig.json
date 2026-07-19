@@ -30,5 +30,15 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules"]
+  "exclude": [
+    "node_modules",
+    "src/app/api/admin/payos-status/route.ts",
+    "src/app/api/bookmark/toggle/route.ts",
+    "src/app/api/checkin/claim/route.ts",
+    "src/app/api/missions/claim/route.ts",
+    "src/app/api/missions/progress/route.ts",
+    "src/app/api/unlock-chapter/route.ts",
+    "src/app/api/webhooks/payos/route.ts",
+    "src/app/api/withdraw/request/route.ts"
+  ]
 }

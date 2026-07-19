@@ -94,7 +94,7 @@ export async function POST(request: NextRequest) {
       const today = new Date().toISOString().slice(0, 10);
       const progressRef = adminDb().doc(`users/${buyerId}/daily_missions/${today}/progress/unlock_vip`);
       const dedupKey = `chapter:${chapterId}`;
-      await adminDb().runTransaction(async (tx) => {
+      await adminDb().runTransaction(async (tx: any) => {
         const p = await tx.get(progressRef);
         const data = (p.exists ? p.data() : {}) as any;
         const keys: string[] = data.dedupKeys || [];

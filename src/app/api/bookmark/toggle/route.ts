@@ -56,7 +56,7 @@ export async function POST(req: NextRequest) {
           const today = new Date().toISOString().slice(0, 10);
           const progressRef = db.doc(`users/${uid}/daily_missions/${today}/progress/bookmark_novel`);
           const dedupKey = `novel:${novelId}`;
-          await db.runTransaction(async (tx) => {
+          await db.runTransaction(async (tx: any) => {
             const p = await tx.get(progressRef);
             const data = (p.exists ? p.data() : {}) as any;
             const keys: string[] = data.dedupKeys || [];

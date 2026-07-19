@@ -52,7 +52,7 @@ export async function POST(req: NextRequest) {
 
     // Atomic check-and-credit using a transaction so two concurrent
     // requests from the same user can't both succeed.
-    const result = await db.runTransaction(async (tx) => {
+    const result = await db.runTransaction(async (tx: any) => {
       const snap = await tx.get(userRef);
       if (!snap.exists) throw new Error('User not found');
       const data = snap.data() as any;

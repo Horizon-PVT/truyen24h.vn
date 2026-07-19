@@ -21,14 +21,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid action. Must be approve, reject, or needs_fix' }, { status: 400 });
   }
 
-  const db = adminDb();
-  const draftRef = db.collection('operator_drafts').doc(draftId);
-  const draftDoc = await draftRef.get();
-
-  if (!draftDoc.exists) {
-    return NextResponse.json({ error: 'Draft not found' }, { status: 404 });
-  }
-
   let newStatus: 'APPROVED' | 'REJECTED' | 'NEEDS_FIX';
   if (action === 'approve') {
     newStatus = 'APPROVED';
@@ -40,31 +32,53 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
   }
 
-  const adminEmail = auth.email || auth.uid || 'admin';
-  const now = FieldValue.serverTimestamp();
+  try {
+    const db = adminDb();
+    const draftRef = db.collection('operator_drafts').doc(draftId);
+    const reviewLogRef = db.collection('operator_reviews').doc();
+    const adminEmail = auth.email || auth.uid || 'admin';
+    const now = FieldValue.serverTimestamp();
 
-  // Create review log
-  const reviewLogRef = db.collection('operator_reviews').doc();
-  const reviewLog = {
-    draftId,
-    action,
-    note: typeof note === 'string' ? note : '',
-    statusAfter: newStatus,
-    reviewedBy: adminEmail,
-    createdAt: now,
-  };
+    const result = await db.runTransaction(async (transaction: any) => {
+      const draftDoc = await transaction.get(draftRef);
+      if (!draftDoc.exists) {
+        return { error: 'Draft not found', status: 404 };
+      }
 
-  await db.runTransaction(async (transaction: any) => {
-    transaction.set(reviewLogRef, reviewLog);
-    transaction.update(draftRef, {
-      status: newStatus,
-      updatedAt: now,
+      const currentStatus = draftDoc.get('status');
+      if (currentStatus === 'PUBLISHED') {
+        return { error: 'Draft is already published and cannot be modified', status: 400 };
+      }
+
+      if (currentStatus === newStatus) {
+        return { ok: true, status: currentStatus, idempotent: true };
+      }
+
+      const reviewLog = {
+        draftId,
+        action,
+        note: typeof note === 'string' ? note : '',
+        statusAfter: newStatus,
+        reviewedBy: adminEmail,
+        createdAt: now,
+      };
+
+      transaction.set(reviewLogRef, reviewLog);
+      transaction.update(draftRef, {
+        status: newStatus,
+        updatedAt: now,
+      });
+
+      return { ok: true, status: newStatus, reviewLogId: reviewLogRef.id };
     });
-  });
 
-  return NextResponse.json({
-    ok: true,
-    status: newStatus,
-    reviewLogId: reviewLogRef.id,
-  });
+    if (result.error) {
+      return NextResponse.json({ error: result.error }, { status: result.status });
+    }
+
+    return NextResponse.json(result);
+  } catch (error: any) {
+    console.error('Approve transaction failed:', error);
+    return NextResponse.json({ error: error.message || 'Internal server error' }, { status: 500 });
+  }
 }

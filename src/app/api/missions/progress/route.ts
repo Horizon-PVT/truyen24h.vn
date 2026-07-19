@@ -33,7 +33,7 @@ export async function POST(req: NextRequest) {
     const date = todayKey();
     const progressRef = db.doc(`users/${uid}/daily_missions/${date}/progress/${missionId}`);
 
-    const result = await db.runTransaction(async (tx) => {
+    const result = await db.runTransaction(async (tx: any) => {
       const snap = await tx.get(progressRef);
       const data = (snap.exists ? snap.data() : {}) as any;
 
