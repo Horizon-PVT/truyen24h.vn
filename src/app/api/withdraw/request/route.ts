@@ -1,84 +1,98 @@
-/**
- * POST /api/withdraw/request
- *
- * Author requests to convert their xu balance into VND via bank
- * transfer. Atomically (a) deducts the requested xu from the user
- * doc and (b) creates a PENDING withdraw_requests doc with their
- * bank info. Admin reviews + marks COMPLETED via /admin (existing).
- *
- * Body: {
- *   uid: string,
- *   amountXu: number,           // requested xu amount
- *   bankName: string,
- *   accountName: string,
- *   accountNumber: string,
- * }
- *
- * Returns: { ok, requestId, newBalance } or { error }
- */
-import { NextRequest, NextResponse } from 'next/server';
-import { adminDb, serverTimestamp, FieldValue } from '@/lib/firebaseAdmin';
+import { NextResponse } from 'next/server';
+import type { Transaction } from 'firebase-admin/firestore';
+import { requireFirebaseUser } from '@/lib/apiAuth';
+import { adminDb, FieldValue } from '@/lib/firebaseAdmin';
 
-export const runtime = 'nodejs';
+const MIN_WITHDRAW_COINS = 500;
+const VND_PER_COIN = 100;
 
-// Conversion rate: 1 xu = 100 VND. Minimum withdrawal 10,000 VND = 100 xu.
-const XU_TO_VND = 100;
-const MIN_XU = 100;
+type WithdrawBody = {
+  bankName?: unknown;
+  accountName?: unknown;
+  accountNumber?: unknown;
+};
 
-export async function POST(req: NextRequest) {
+function cleanText(value: unknown, maxLength: number): string {
+  if (typeof value !== 'string') return '';
+  return value.trim().slice(0, maxLength);
+}
+
+function cleanAccountNumber(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value.replace(/[^0-9A-Za-z]/g, '').slice(0, 40);
+}
+
+export async function POST(request: Request) {
+  const auth = await requireFirebaseUser(request);
+  if (!auth.ok) return auth.response;
+
+  let body: WithdrawBody;
   try {
-    const body = await req.json().catch(() => ({}));
-    const uid = body.uid as string | undefined;
-    const amountXu = Math.floor(Number(body.amountXu));
-    const bankName = (body.bankName || '').toString().trim().slice(0, 80);
-    const accountName = (body.accountName || '').toString().trim().slice(0, 80);
-    const accountNumber = (body.accountNumber || '').toString().trim().slice(0, 30);
+    body = (await request.json()) as WithdrawBody;
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
 
-    if (!uid) return NextResponse.json({ error: 'Missing uid' }, { status: 400 });
-    if (!bankName || !accountName || !accountNumber) {
-      return NextResponse.json({ error: 'Vui lòng nhập đầy đủ thông tin ngân hàng' }, { status: 400 });
-    }
-    if (!Number.isFinite(amountXu) || amountXu < MIN_XU) {
-      return NextResponse.json({ error: `Số xu rút tối thiểu là ${MIN_XU}` }, { status: 400 });
-    }
+  const bankName = cleanText(body.bankName, 80);
+  const accountName = cleanText(body.accountName, 120);
+  const accountNumber = cleanAccountNumber(body.accountNumber);
+  if (!bankName || !accountName || !accountNumber) {
+    return NextResponse.json({ error: 'Missing withdrawal account details' }, { status: 400 });
+  }
 
-    const db = adminDb();
-    const userRef = db.collection('users').doc(uid);
-    const reqRef = db.collection('withdraw_requests').doc();
+  const uid = auth.user.uid;
+  const db = adminDb();
+  const userRef = db.doc(`users/${uid}`);
+  const requestRef = db.collection('withdraw_requests').doc();
 
-    const result = await db.runTransaction(async (tx) => {
-      const snap = await tx.get(userRef);
-      if (!snap.exists) throw new Error('User not found');
-      const data = snap.data() as any;
-      const currentCoins = Number(data.coins || 0);
-      if (currentCoins < amountXu) {
-        throw new Error(`Số dư không đủ. Hiện có ${currentCoins} xu.`);
+  try {
+    const result = await db.runTransaction(async (tx: Transaction) => {
+      const userSnap = await tx.get(userRef);
+      if (!userSnap.exists) {
+        return { status: 404 as const, body: { error: 'User not found' } };
       }
 
-      tx.update(userRef, {
-        coins: FieldValue.increment(-amountXu),
-        updatedAt: serverTimestamp(),
-      });
+      const userData = userSnap.data() || {};
+      const currentCoins = Number(userData.coins || 0);
+      if (!Number.isFinite(currentCoins) || currentCoins < MIN_WITHDRAW_COINS) {
+        return { status: 400 as const, body: { error: 'Insufficient balance' } };
+      }
 
-      tx.set(reqRef, {
+      tx.set(
+        userRef,
+        {
+          coins: 0,
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+      tx.set(requestRef, {
         userId: uid,
-        userName: data.displayName || 'Khuyết danh',
-        userEmail: data.email || '',
-        amountXu,
-        amountVND: amountXu * XU_TO_VND,
+        userName: cleanText(userData.displayName, 120) || 'Khuyet danh',
+        userEmail: auth.user.email || cleanText(userData.email, 160),
+        amountXu: currentCoins,
+        amountVND: currentCoins * VND_PER_COIN,
         bankName,
         accountName,
         accountNumber,
         status: 'PENDING',
-        createdAt: serverTimestamp(),
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
       });
 
-      return { requestId: reqRef.id, newBalance: currentCoins - amountXu };
+      return {
+        status: 200 as const,
+        body: {
+          ok: true,
+          requestId: requestRef.id,
+          amountXu: currentCoins,
+          amountVND: currentCoins * VND_PER_COIN,
+        },
+      };
     });
 
-    return NextResponse.json({ ok: true, ...result });
-  } catch (err: any) {
-    console.error('[withdraw/request] error', err);
-    return NextResponse.json({ error: err.message || 'Withdraw failed' }, { status: 500 });
+    return NextResponse.json(result.body, { status: result.status });
+  } catch {
+    return NextResponse.json({ error: 'Withdrawal request failed' }, { status: 500 });
   }
 }

@@ -1,11 +1,10 @@
 "use client";
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { User, updateProfile } from 'firebase/auth';
-import { X, Camera, Save, Loader2, Zap, Coins, Crown, Gift } from 'lucide-react';
-import { db, handleFirestoreError, OperationType } from '../firebase';
-import { doc, updateDoc, increment, onSnapshot } from 'firebase/firestore';
+import { doc, onSnapshot } from 'firebase/firestore';
+import { Camera, Coins, Crown, Loader2, Save, X, Zap } from 'lucide-react';
+import { db } from '../firebase';
 import { UserProfile } from '../types';
-import { useEffect } from 'react';
 
 interface ProfileEditModalProps {
   user: User;
@@ -21,37 +20,16 @@ export default function ProfileEditModal({ user, onClose, onUpdate }: ProfileEdi
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
 
   useEffect(() => {
-    const unsubscribe = onSnapshot(doc(db, 'users', user.uid), (doc) => {
-      if (doc.exists()) {
-        setUserProfile(doc.data() as UserProfile);
+    const unsubscribe = onSnapshot(doc(db, 'users', user.uid), (snapshot) => {
+      if (snapshot.exists()) {
+        setUserProfile(snapshot.data() as UserProfile);
       }
     });
     return () => unsubscribe();
-  }, [user]);
+  }, [user.uid]);
 
-  const handleRecharge = async () => {
-    const path = `users/${user.uid}`;
-    try {
-      await updateDoc(doc(db, path), {
-        coins: increment(1000)
-      });
-      alert('Đã nạp thành công 1000 Ngọc! (Bản thử nghiệm)');
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, path);
-    }
-  };
-
-  const handleUpgradeVIP = async () => {
-    const path = `users/${user.uid}`;
-    try {
-      await updateDoc(doc(db, path), {
-        isVip: true,
-        badges: ['VIP', 'Fan Cứng']
-      });
-      alert('Chúc mừng! Bạn đã trở thành thành viên VIP. (Bản thử nghiệm)');
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, path);
-    }
+  const goToVipPage = () => {
+    window.location.href = '/vip';
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -62,7 +40,7 @@ export default function ProfileEditModal({ user, onClose, onUpdate }: ProfileEdi
     try {
       await updateProfile(user, {
         displayName: displayName.trim(),
-        photoURL: photoURL.trim() || null
+        photoURL: photoURL.trim() || null,
       });
       onUpdate();
       onClose();
@@ -78,7 +56,7 @@ export default function ProfileEditModal({ user, onClose, onUpdate }: ProfileEdi
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose}></div>
       <div className="relative w-full max-w-md bg-surface rounded-[40px] shadow-2xl border border-accent/10 p-10 animate-in zoom-in-95 duration-300">
-        <button 
+        <button
           onClick={onClose}
           className="absolute top-6 right-6 p-2 hover:bg-background-light rounded-full text-muted transition-colors"
         >
@@ -90,7 +68,6 @@ export default function ProfileEditModal({ user, onClose, onUpdate }: ProfileEdi
           <p className="text-sm text-muted font-medium">Quản lý thông tin và tài sản của bạn</p>
         </div>
 
-        {/* Stats Section */}
         <div className="grid grid-cols-2 gap-4 mb-10">
           <div className="bg-background-light rounded-3xl p-4 border border-accent/5 flex flex-col items-center text-center">
             <div className="size-10 bg-primary/10 rounded-xl flex items-center justify-center text-primary mb-2">
@@ -108,8 +85,8 @@ export default function ProfileEditModal({ user, onClose, onUpdate }: ProfileEdi
             </div>
             <span className="text-[10px] font-black text-muted uppercase tracking-widest mb-1">Số dư Ngọc</span>
             <span className="text-xl font-black text-text-main">{userProfile?.coins || 0}</span>
-            <button 
-              onClick={handleRecharge}
+            <button
+              onClick={goToVipPage}
               className="text-[10px] font-black text-primary uppercase tracking-widest mt-2 hover:underline"
             >
               Nạp thêm
@@ -121,9 +98,9 @@ export default function ProfileEditModal({ user, onClose, onUpdate }: ProfileEdi
           <div className="flex flex-col items-center gap-6">
             <div className="relative group">
               <div className="size-32 rounded-full overflow-hidden border-4 border-primary/20 shadow-xl">
-                <img 
-                  src={photoURL || `https://ui-avatars.com/api/?name=${displayName || 'User'}`} 
-                  alt="Avatar" 
+                <img
+                  src={photoURL || `https://ui-avatars.com/api/?name=${displayName || 'User'}`}
+                  alt="Avatar"
                   referrerPolicy="no-referrer"
                   className="w-full h-full object-cover"
                 />
@@ -132,11 +109,11 @@ export default function ProfileEditModal({ user, onClose, onUpdate }: ProfileEdi
                 <Camera className="size-8 text-white" />
               </div>
             </div>
-            
+
             <div className="w-full">
               <label className="text-[10px] uppercase tracking-[0.2em] font-black text-muted mb-3 block">Link ảnh đại diện</label>
-              <input 
-                type="url" 
+              <input
+                type="url"
                 value={photoURL}
                 onChange={(e) => setPhotoURL(e.target.value)}
                 placeholder="https://example.com/avatar.jpg"
@@ -147,8 +124,8 @@ export default function ProfileEditModal({ user, onClose, onUpdate }: ProfileEdi
 
           <div>
             <label className="text-[10px] uppercase tracking-[0.2em] font-black text-muted mb-3 block">Tên hiển thị</label>
-            <input 
-              type="text" 
+            <input
+              type="text"
               required
               value={displayName}
               onChange={(e) => setDisplayName(e.target.value)}
@@ -162,15 +139,15 @@ export default function ProfileEditModal({ user, onClose, onUpdate }: ProfileEdi
           )}
 
           <div className="flex gap-4 pt-4">
-            <button 
+            <button
               type="button"
-              onClick={handleUpgradeVIP}
+              onClick={goToVipPage}
               className="flex-1 h-14 bg-background-dark text-white rounded-full font-black text-xs uppercase tracking-widest shadow-xl hover:bg-black transition-all flex items-center justify-center gap-2"
             >
               <Crown className="size-4 text-yellow-400" />
               Nâng cấp VIP
             </button>
-            <button 
+            <button
               type="submit"
               disabled={isUpdating}
               className="flex-1 h-14 bg-primary text-white rounded-full font-black text-xs uppercase tracking-widest shadow-xl shadow-primary/20 hover:opacity-90 transition-all flex items-center justify-center gap-2 disabled:opacity-50"

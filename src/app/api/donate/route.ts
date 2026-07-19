@@ -1,86 +1,108 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { initializeApp, getApps } from 'firebase/app';
-import { getFirestore, doc, getDoc, writeBatch, collection, serverTimestamp, increment } from 'firebase/firestore';
+import type { Transaction } from 'firebase-admin/firestore';
+import { FieldValue } from 'firebase-admin/firestore';
+import { requireFirebaseUser } from '@/lib/apiAuth';
+import { adminDb } from '@/lib/firebaseAdmin';
 
-const firebaseConfig = {
-  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
-  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
-  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
-  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
-  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
+type DonateBody = {
+  authorId?: unknown;
+  amount?: unknown;
 };
 
-const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
-const db = getFirestore(app);
+const MAX_DONATION_COINS = 100000;
 
-/**
- * POST /api/donate
- * Server-side endpoint for donating coins to an author
- * This prevents client-side coin manipulation
- */
+function isSafeDocId(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0 && !value.includes('/');
+}
+
+function parseDonationAmount(value: unknown): number | null {
+  const amount = Number(value);
+  if (!Number.isInteger(amount) || amount <= 0 || amount > MAX_DONATION_COINS) {
+    return null;
+  }
+  return amount;
+}
+
 export async function POST(request: NextRequest) {
+  const auth = await requireFirebaseUser(request);
+  if (!auth.ok) return auth.response;
+
   try {
-    const body = await request.json();
-    const { donorId, authorId, amount } = body;
+    const body = (await request.json()) as DonateBody;
+    const donorId = auth.user.uid;
+    const authorId = isSafeDocId(body.authorId) ? body.authorId.trim() : null;
+    const donateAmount = parseDonationAmount(body.amount);
 
-    // Validate
-    if (!donorId || !authorId || !amount) {
-      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
-    }
-
-    const donateAmount = Number(amount);
-    if (donateAmount <= 0 || donateAmount > 100000) {
-      return NextResponse.json({ error: 'Invalid amount' }, { status: 400 });
+    if (!authorId || donateAmount === null) {
+      return NextResponse.json({ error: 'Invalid donation request' }, { status: 400 });
     }
 
     if (donorId === authorId) {
       return NextResponse.json({ error: 'Cannot donate to yourself' }, { status: 400 });
     }
 
-    // Verify donor has enough coins
-    const donorDoc = await getDoc(doc(db, 'users', donorId));
-    if (!donorDoc.exists()) {
-      return NextResponse.json({ error: 'Donor not found' }, { status: 404 });
-    }
+    const db = adminDb();
+    const donorRef = db.doc(`users/${donorId}`);
+    const authorRef = db.doc(`users/${authorId}`);
+    const txRef = db.collection('transactions').doc();
 
-    const donorData = donorDoc.data();
-    if ((donorData.coins || 0) < donateAmount) {
-      return NextResponse.json({ error: 'Insufficient coins' }, { status: 400 });
-    }
+    await db.runTransaction(async (transaction: Transaction) => {
+      const [donorSnap, authorSnap] = await transaction.getAll(donorRef, authorRef);
 
-    // Execute batch
-    const batch = writeBatch(db);
+      if (!donorSnap.exists) {
+        throw new Error('DONOR_NOT_FOUND');
+      }
 
-    // Deduct from donor
-    batch.update(doc(db, 'users', donorId), {
-      coins: increment(-donateAmount),
-      contributionScore: increment(donateAmount),
+      if (!authorSnap.exists) {
+        throw new Error('AUTHOR_NOT_FOUND');
+      }
+
+      const donorCoins = Number(donorSnap.get('coins') ?? 0);
+      if (!Number.isFinite(donorCoins) || donorCoins < donateAmount) {
+        throw new Error('INSUFFICIENT_COINS');
+      }
+
+      transaction.update(donorRef, {
+        coins: FieldValue.increment(-donateAmount),
+        contributionScore: FieldValue.increment(donateAmount),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+
+      transaction.update(authorRef, {
+        coins: FieldValue.increment(donateAmount),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+
+      transaction.set(txRef, {
+        type: 'DONATE',
+        donorId,
+        authorId,
+        buyerId: donorId,
+        amount: donateAmount,
+        status: 'COMPLETED',
+        provider: 'internal',
+        createdAt: FieldValue.serverTimestamp(),
+      });
     });
-
-    // Credit author
-    batch.update(doc(db, 'users', authorId), {
-      coins: increment(donateAmount),
-    });
-
-    // Log transaction
-    const txRef = doc(collection(db, 'transactions'));
-    batch.set(txRef, {
-      type: 'DONATE',
-      donorId,
-      authorId,
-      buyerId: donorId,
-      amount: donateAmount,
-      createdAt: serverTimestamp(),
-    });
-
-    await batch.commit();
 
     return NextResponse.json({
       success: true,
-      message: `Donated ${donateAmount} coins successfully`,
+      amount: donateAmount,
     });
-  } catch (error: any) {
-    console.error('Donate error:', error);
-    return NextResponse.json({ error: 'Internal server error', details: error.message }, { status: 500 });
+  } catch (error) {
+    if (error instanceof Error) {
+      if (error.message === 'DONOR_NOT_FOUND') {
+        return NextResponse.json({ error: 'User not found' }, { status: 404 });
+      }
+      if (error.message === 'AUTHOR_NOT_FOUND') {
+        return NextResponse.json({ error: 'Author not found' }, { status: 404 });
+      }
+      if (error.message === 'INSUFFICIENT_COINS') {
+        return NextResponse.json({ error: 'Insufficient coins' }, { status: 402 });
+      }
+    }
+
+    console.error('Donate route failed');
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

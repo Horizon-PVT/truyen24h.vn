@@ -5,6 +5,7 @@ import { useState, useMemo, useEffect } from 'react';
 import Pagination from './Pagination';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { collection, query, onSnapshot, orderBy } from 'firebase/firestore';
+import { isPublicItem } from '../lib/visibilityGuard';
 
 interface FilterViewProps {
   initialGenre?: string;
@@ -39,7 +40,9 @@ export default function FilterView({ initialGenre, initialSearch, initialChapter
   useEffect(() => {
     const qNovels = query(collection(db, 'novels'), orderBy('createdAt', 'desc'));
     const unsubscribe = onSnapshot(qNovels, (snapshot) => {
-      const fetched = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Novel));
+      const fetched = snapshot.docs
+        .map(doc => ({ id: doc.id, ...doc.data() } as Novel))
+        .filter(isPublicItem);
       setAllNovels(fetched);
       setLoading(false);
     }, (error) => {

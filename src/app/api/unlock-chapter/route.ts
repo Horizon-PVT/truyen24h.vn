@@ -1,122 +1,221 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { initializeApp, getApps } from 'firebase/app';
-import { getFirestore, doc, getDoc, writeBatch, collection, serverTimestamp, increment } from 'firebase/firestore';
-import { adminDb, serverTimestamp as adminTimestamp } from '@/lib/firebaseAdmin';
+import { NextResponse } from 'next/server';
+import type { Transaction as FirestoreTransaction } from 'firebase-admin/firestore';
+import { requireFirebaseUser } from '@/lib/apiAuth';
+import { adminDb, FieldValue } from '@/lib/firebaseAdmin';
 
+const AUTHOR_SHARE_RATIO = 0.6;
+const DEFAULT_VIP_PRICE = 50;
 
-const firebaseConfig = {
-  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
-  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
-  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
-  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
-  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
+type UnlockBody = {
+  novelId?: unknown;
+  chapterId?: unknown;
 };
 
-const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
-const db = getFirestore(app);
+type ServerNovel = {
+  authorId?: unknown;
+  chapters?: unknown;
+};
 
-/**
- * POST /api/unlock-chapter
- * Server-side endpoint for unlocking VIP chapters
- * This prevents client-side coin manipulation
- */
-export async function POST(request: NextRequest) {
+type ServerChapter = {
+  id?: unknown;
+  isVip?: unknown;
+  price?: unknown;
+  authorId?: unknown;
+};
+
+type ServerUser = {
+  coins?: unknown;
+  unlockedChapters?: unknown;
+  vipUntil?: unknown;
+};
+
+function readId(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const id = value.trim();
+  if (!/^[a-zA-Z0-9_-]{1,160}$/.test(id)) return null;
+  return id;
+}
+
+function toMoneyNumber(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return 0;
+  return Math.floor(value);
+}
+
+function isActiveVip(value: unknown): boolean {
+  const now = Date.now();
+  if (value instanceof Date) return value.getTime() > now;
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) && parsed > now;
+  }
+  if (typeof value === 'object' && value !== null && 'toMillis' in value) {
+    const toMillis = (value as { toMillis?: () => number }).toMillis;
+    return typeof toMillis === 'function' && toMillis() > now;
+  }
+  if (typeof value === 'object' && value !== null && 'seconds' in value) {
+    const seconds = (value as { seconds?: unknown }).seconds;
+    return typeof seconds === 'number' && seconds * 1000 > now;
+  }
+  return false;
+}
+
+function findEmbeddedChapter(chapters: unknown, chapterId: string): ServerChapter | null {
+  if (!Array.isArray(chapters)) return null;
+  const found = chapters.find((chapter) => {
+    if (typeof chapter !== 'object' || chapter === null) return false;
+    return (chapter as ServerChapter).id === chapterId;
+  });
+  return found && typeof found === 'object' ? (found as ServerChapter) : null;
+}
+
+function safeTransactionId(buyerId: string, novelId: string, chapterId: string): string {
+  return `unlock_${buyerId}_${novelId}_${chapterId}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+export async function POST(request: Request) {
+  const auth = await requireFirebaseUser(request);
+  if (!auth.ok) return auth.response;
+
+  let body: UnlockBody;
   try {
-    const body = await request.json();
-    const { buyerId, novelId, chapterId, chapterPrice, authorId } = body;
+    body = (await request.json()) as UnlockBody;
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
 
-    // Validate required fields
-    if (!buyerId || !novelId || !chapterId || !authorId) {
-      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+  const novelId = readId(body.novelId);
+  const chapterId = readId(body.chapterId);
+  if (!novelId || !chapterId) {
+    return NextResponse.json({ error: 'Invalid request' }, { status: 400 });
+  }
+
+  const buyerId = auth.user.uid;
+  const db = adminDb();
+  const novelRef = db.doc(`novels/${novelId}`);
+  const chapterRef = db.doc(`novels/${novelId}/chapters/${chapterId}`);
+  const buyerRef = db.doc(`users/${buyerId}`);
+  const transactionRef = db.doc(`transactions/${safeTransactionId(buyerId, novelId, chapterId)}`);
+
+  try {
+    const [novelSnap, chapterSnap] = await Promise.all([novelRef.get(), chapterRef.get()]);
+    if (!novelSnap.exists) {
+      return NextResponse.json({ error: 'Novel not found' }, { status: 404 });
     }
 
-    const price = Number(chapterPrice) || 50;
-
-    // 1. Verify buyer exists and has enough coins
-    const buyerDoc = await getDoc(doc(db, 'users', buyerId));
-    if (!buyerDoc.exists()) {
-      return NextResponse.json({ error: 'User not found' }, { status: 404 });
+    const novel = novelSnap.data() as ServerNovel;
+    const embeddedChapter = findEmbeddedChapter(novel.chapters, chapterId);
+    const chapter = chapterSnap.exists ? (chapterSnap.data() as ServerChapter) : embeddedChapter;
+    if (!chapter) {
+      return NextResponse.json({ error: 'Chapter not found' }, { status: 404 });
     }
 
-    const buyerData = buyerDoc.data();
-    const currentCoins = buyerData.coins || 0;
-
-    if (currentCoins < price) {
-      return NextResponse.json({ error: 'Insufficient coins', currentCoins, required: price }, { status: 400 });
+    if (typeof chapter.price === 'number' && chapter.price < 0) {
+      return NextResponse.json({ error: 'Invalid chapter price' }, { status: 400 });
     }
 
-    // 2. Check if already unlocked
-    const unlockedChapters: string[] = buyerData.unlockedChapters || [];
-    if (unlockedChapters.includes(chapterId)) {
-      return NextResponse.json({ error: 'Chapter already unlocked' }, { status: 400 });
-    }
+    const isVipChapter = chapter.isVip === true;
+    const serverPrice = isVipChapter ? toMoneyNumber(chapter.price) || DEFAULT_VIP_PRICE : 0;
+    const authorId =
+      typeof chapter.authorId === 'string' && chapter.authorId
+        ? chapter.authorId
+        : typeof novel.authorId === 'string'
+          ? novel.authorId
+          : '';
 
-    // 3. Execute atomic batch write
-    const batch = writeBatch(db);
+    const result = await db.runTransaction(async (tx: FirestoreTransaction) => {
+      const buyerSnap = await tx.get(buyerRef);
+      if (!buyerSnap.exists) {
+        return { status: 404, body: { error: 'User not found' } };
+      }
 
-    // Deduct coins from buyer + add chapter to unlockedChapters
-    const buyerRef = doc(db, 'users', buyerId);
-    batch.update(buyerRef, {
-      coins: increment(-price),
-      unlockedChapters: [...unlockedChapters, chapterId],
+      const buyer = buyerSnap.data() as ServerUser;
+      const unlockedChapters = Array.isArray(buyer.unlockedChapters)
+        ? buyer.unlockedChapters.filter((id): id is string => typeof id === 'string')
+        : [];
+      const alreadyUnlocked = unlockedChapters.includes(chapterId);
+      const activeVip = isActiveVip(buyer.vipUntil);
+
+      if (!isVipChapter || serverPrice === 0 || alreadyUnlocked || activeVip) {
+        if (!alreadyUnlocked && isVipChapter) {
+          tx.set(
+            buyerRef,
+            {
+              unlockedChapters: FieldValue.arrayUnion(chapterId),
+              updatedAt: FieldValue.serverTimestamp(),
+            },
+            { merge: true }
+          );
+        }
+        return {
+          status: 200,
+          body: {
+            success: true,
+            alreadyUnlocked,
+            deducted: 0,
+            authorShare: 0,
+            vipCovered: activeVip && isVipChapter,
+          },
+        };
+      }
+
+      const currentCoins = toMoneyNumber(buyer.coins);
+      if (currentCoins < serverPrice) {
+        return {
+          status: 402,
+          body: { error: 'Insufficient coins', required: serverPrice },
+        };
+      }
+
+      const authorShare = Math.floor(serverPrice * AUTHOR_SHARE_RATIO);
+      const platformFee = serverPrice - authorShare;
+      const userUpdate = {
+        coins: FieldValue.increment(-serverPrice),
+        unlockedChapters: FieldValue.arrayUnion(chapterId),
+        updatedAt: FieldValue.serverTimestamp(),
+      };
+
+      tx.set(buyerRef, userUpdate, { merge: true });
+
+      if (authorId && authorId !== buyerId && authorShare > 0) {
+        tx.set(
+          db.doc(`users/${authorId}`),
+          {
+            coins: FieldValue.increment(authorShare),
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        );
+      }
+
+      tx.set(
+        transactionRef,
+        {
+          type: 'UNLOCK_CHAPTER',
+          chapterId,
+          novelId,
+          buyerId,
+          authorId,
+          price: serverPrice,
+          authorShare: authorId === buyerId ? 0 : authorShare,
+          platformFee: authorId === buyerId ? serverPrice : platformFee,
+          createdAt: FieldValue.serverTimestamp(),
+        },
+        { merge: false }
+      );
+
+      return {
+        status: 200,
+        body: {
+          success: true,
+          alreadyUnlocked: false,
+          deducted: serverPrice,
+          authorShare: authorId === buyerId ? 0 : authorShare,
+        },
+      };
     });
 
-    // Calculate revenue split: 60% author, 40% platform
-    const authorShare = Math.floor(price * 0.6);
-    const platformFee = price - authorShare;
-
-    // Credit author (only if buyer != author)
-    if (authorId !== buyerId) {
-      const authorRef = doc(db, 'users', authorId);
-      batch.update(authorRef, {
-        coins: increment(authorShare),
-      });
-    }
-
-    // Log transaction
-    const txRef = doc(collection(db, 'transactions'));
-    batch.set(txRef, {
-      type: 'UNLOCK_CHAPTER',
-      chapterId,
-      novelId,
-      buyerId,
-      authorId,
-      price,
-      authorShare,
-      platformFee,
-      createdAt: serverTimestamp(),
-    });
-
-    await batch.commit();
-
-    // Increment the 'unlock_vip' daily mission (best-effort, non-fatal).
-    try {
-      const today = new Date().toISOString().slice(0, 10);
-      const progressRef = adminDb().doc(`users/${buyerId}/daily_missions/${today}/progress/unlock_vip`);
-      const dedupKey = `chapter:${chapterId}`;
-      await adminDb().runTransaction(async (tx) => {
-        const p = await tx.get(progressRef);
-        const data = (p.exists ? p.data() : {}) as any;
-        const keys: string[] = data.dedupKeys || [];
-        if (keys.includes(dedupKey)) return;
-        tx.set(progressRef, {
-          missionId: 'unlock_vip',
-          count: (data.count || 0) + 1,
-          dedupKeys: [...keys, dedupKey],
-          updatedAt: adminTimestamp(),
-          ...(p.exists ? {} : { createdAt: adminTimestamp(), claimed: false }),
-        }, { merge: true });
-      });
-    } catch (_e) {}
-
-    return NextResponse.json({
-      success: true,
-      message: 'Chapter unlocked successfully',
-      deducted: price,
-      authorShare,
-    });
-  } catch (error: any) {
-    console.error('Unlock chapter error:', error);
-    return NextResponse.json({ error: 'Internal server error', details: error.message }, { status: 500 });
+    return NextResponse.json(result.body, { status: result.status });
+  } catch {
+    return NextResponse.json({ error: 'Unlock chapter failed' }, { status: 500 });
   }
 }

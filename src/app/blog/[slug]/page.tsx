@@ -9,6 +9,7 @@ import { notFound } from 'next/navigation';
 import { adminDb } from '@/lib/firebaseAdmin';
 import { serializeFirestore } from '@/lib/serialize';
 import { absoluteUrl, SITE_NAME, SITE_LOGO_PATH } from '@/lib/site';
+import { isPublicItem } from '@/lib/visibilityGuard';
 import TopNavBarClientWrapper from '@/components/TopNavBarClientWrapper';
 import { Calendar, Clock, Tag } from 'lucide-react';
 import ShareButtons from '@/components/ShareButtons';
@@ -32,7 +33,9 @@ interface BlogPost {
 async function fetchPost(slug: string): Promise<BlogPost | null> {
   const snap = await adminDb().collection('blog_posts').doc(slug).get();
   if (!snap.exists) return null;
-  return serializeFirestore({ slug: snap.id, ...snap.data() }) as BlogPost;
+  const post = serializeFirestore({ slug: snap.id, ...snap.data() }) as BlogPost;
+  if (!isPublicItem(post)) return null;
+  return post;
 }
 
 export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }) {

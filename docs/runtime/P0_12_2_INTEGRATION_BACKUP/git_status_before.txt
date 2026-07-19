@@ -1,0 +1,71 @@
+﻿## master...origin/master [behind 40]
+ M .gitignore
+ M AGENTS.md
+ M firestore.rules
+ M next.config.ts
+ M package.json
+ M src/app/api/payos/create/route.ts
+ M src/app/api/webhooks/payos/route.ts
+ M src/app/doc/[slug]/[chapter_id]/page.tsx
+ M src/app/globals.css
+ M src/app/layout.tsx
+ M src/app/page.tsx
+ M src/app/sitemap.ts
+ M src/app/tac-gia/page.tsx
+ M src/app/truyen/[slug]/page.tsx
+ M src/app/vip/page.tsx
+ M src/components/AdminClientWrapper.tsx
+ M src/components/AdminDashboard.tsx
+ M src/components/AutoBotImport.tsx
+ M src/components/BookshelfView.tsx
+ M src/components/CheckInModal.tsx
+ M src/components/CreatorStudioView.tsx
+ M src/components/DiscoverView.tsx
+ M src/components/Footer.tsx
+ M src/components/NovelDetailView.tsx
+ M src/components/ProfileEditModal.tsx
+ M src/components/ReaderView.tsx
+ M src/components/TopNavBar.tsx
+ M src/components/TopNavBarClientWrapper.tsx
+ M src/firebase-backend.ts
+ M src/firebase.ts
+ M src/types.ts
+?? .codex-smoke/
+?? .github/
+?? DEPLOY.md
+?? IMPORT_VERCEL_ENV.md
+?? SETUP_GUIDE.md
+?? VERIFY_SEARCH_CONSOLE.md
+?? docs/
+?? public/robots.txt
+?? push-to-github.ps1
+?? scripts/
+?? src/app/admin/ai-studio/
+?? src/app/admin/blog/
+?? src/app/admin/novels/
+?? src/app/admin/revenue/
+?? src/app/api/admin/
+?? src/app/api/ai/
+?? src/app/api/bookmark/
+?? src/app/api/checkin/
+?? src/app/api/donate/
+?? src/app/api/missions/
+?? src/app/api/unlock-chapter/
+?? src/app/api/withdraw/
+?? src/app/blog/
+?? src/app/gioi-thieu/
+?? src/app/loading.tsx
+?? src/components/AdSlot.tsx
+?? src/components/AffiliateWidget.tsx
+?? src/components/AiStudioClient.tsx
+?? src/components/Analytics.tsx
+?? src/components/BlogManagerClient.tsx
+?? src/components/JsonLd.tsx
+?? src/components/NovelsManagerClient.tsx
+?? src/components/RevenueDashboardClient.tsx
+?? src/contexts/
+?? src/lib/
+?? src/services/aiBlogService.ts
+?? src/services/aiCoverService.ts
+?? src/services/aiStoryService.ts
+?? vercel.json

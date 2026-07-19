@@ -1,92 +1,99 @@
-/**
- * POST /api/bookmark/toggle
- *
- * Toggle a novel in/out of the user's bookshelf. Uses Admin SDK so
- * the operation always succeeds (Firestore rules block coin writes
- * but bookshelf writes also need the path users/{uid}/bookshelf/*
- * to bypass auth checks reliably).
- *
- * Body: { uid: string, novelId: string, action?: 'follow' | 'read_later' | 'remove' }
- *
- * Returns: { ok, following, readLater }
- */
-import { NextRequest, NextResponse } from 'next/server';
-import { adminDb, serverTimestamp } from '@/lib/firebaseAdmin';
+import { NextResponse } from 'next/server';
+import { requireFirebaseUser } from '@/lib/apiAuth';
+import { adminDb, FieldValue } from '@/lib/firebaseAdmin';
 
-export const runtime = 'nodejs';
+type BookmarkAction = 'follow' | 'readLater' | 'history' | 'progress' | 'remove';
 
-export async function POST(req: NextRequest) {
+type BookmarkBody = {
+  novelId?: unknown;
+  action?: unknown;
+  lastChapterId?: unknown;
+  lastChapterNumber?: unknown;
+  progress?: unknown;
+};
+
+function readId(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const id = value.trim();
+  if (!/^[a-zA-Z0-9_-]{1,120}$/.test(id)) return null;
+  return id;
+}
+
+function readAction(value: unknown): BookmarkAction {
+  if (
+    value === 'follow' ||
+    value === 'readLater' ||
+    value === 'history' ||
+    value === 'progress' ||
+    value === 'remove'
+  ) {
+    return value;
+  }
+  return 'follow';
+}
+
+function boundedNumber(value: unknown, min: number, max: number): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  return Math.max(min, Math.min(max, Math.floor(value)));
+}
+
+export async function POST(request: Request) {
+  const auth = await requireFirebaseUser(request);
+  if (!auth.ok) return auth.response;
+
+  let body: BookmarkBody;
   try {
-    const body = await req.json().catch(() => ({}));
-    const uid = body.uid as string | undefined;
-    const novelId = body.novelId as string | undefined;
-    const action = (body.action || 'follow') as 'follow' | 'read_later' | 'remove';
+    body = (await request.json()) as BookmarkBody;
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
 
-    if (!uid || !novelId) {
-      return NextResponse.json({ error: 'Missing uid or novelId' }, { status: 400 });
-    }
+  const novelId = readId(body.novelId);
+  if (!novelId) {
+    return NextResponse.json({ error: 'Missing novelId' }, { status: 400 });
+  }
 
-    const db = adminDb();
-    const ref = db.doc(`users/${uid}/bookshelf/${novelId}`);
+  const uid = auth.user.uid;
+  const action = readAction(body.action);
+  const bookmarkRef = adminDb().doc(`users/${uid}/bookshelf/${novelId}`);
 
+  try {
     if (action === 'remove') {
-      await ref.delete();
-      return NextResponse.json({ ok: true, following: false, readLater: false });
+      await bookmarkRef.delete();
+      return NextResponse.json({ ok: true, action });
     }
 
-    const snap = await ref.get();
-    const current = snap.exists ? (snap.data() as any) : {};
+    const update: Record<string, unknown> = {
+      novelId,
+      updatedAt: FieldValue.serverTimestamp(),
+    };
 
     if (action === 'follow') {
-      const following = !current.isFollowing;
-      await ref.set({
-        novelId,
-        isFollowing: following,
-        isReadLater: current.isReadLater || false,
-        updatedAt: serverTimestamp(),
-        ...(snap.exists ? {} : { createdAt: serverTimestamp() }),
-      }, { merge: true });
-
-      // Auto-credit the 'bookmark_novel' daily mission when the user
-      // FLIPS TO followed (not on un-bookmark, not on duplicate). We
-      // dedupe per (uid, novelId, date) so the same novel can't farm
-      // multiple points by toggling off/on.
-      if (following) {
-        try {
-          const today = new Date().toISOString().slice(0, 10);
-          const progressRef = db.doc(`users/${uid}/daily_missions/${today}/progress/bookmark_novel`);
-          const dedupKey = `novel:${novelId}`;
-          await db.runTransaction(async (tx) => {
-            const p = await tx.get(progressRef);
-            const data = (p.exists ? p.data() : {}) as any;
-            const keys: string[] = data.dedupKeys || [];
-            if (keys.includes(dedupKey)) return;
-            tx.set(progressRef, {
-              missionId: 'bookmark_novel',
-              count: (data.count || 0) + 1,
-              dedupKeys: [...keys, dedupKey],
-              updatedAt: serverTimestamp(),
-              ...(p.exists ? {} : { createdAt: serverTimestamp(), claimed: false }),
-            }, { merge: true });
-          });
-        } catch (e) { /* non-fatal */ }
-      }
-
-      return NextResponse.json({ ok: true, following, readLater: current.isReadLater || false });
+      update.isFollowing = true;
+    } else if (action === 'readLater') {
+      update.isReadLater = true;
+    } else if (action === 'history') {
+      update.isFollowing = false;
+      update.isReadLater = false;
     }
 
-    // read_later
-    const readLater = !current.isReadLater;
-    await ref.set({
-      novelId,
-      isFollowing: current.isFollowing || false,
-      isReadLater: readLater,
-      updatedAt: serverTimestamp(),
-      ...(snap.exists ? {} : { createdAt: serverTimestamp() }),
-    }, { merge: true });
-    return NextResponse.json({ ok: true, following: current.isFollowing || false, readLater });
-  } catch (err: any) {
-    console.error('[bookmark/toggle] error', err);
-    return NextResponse.json({ error: err.message || 'Toggle failed' }, { status: 500 });
+    if (action === 'progress') {
+      const progress = boundedNumber(body.progress, 0, 100);
+      const lastChapterNumber = boundedNumber(body.lastChapterNumber, 0, 100000);
+      if (typeof body.lastChapterId === 'string') {
+        update.lastChapterId = body.lastChapterId.slice(0, 120);
+      }
+      if (lastChapterNumber !== null) {
+        update.lastChapterNumber = lastChapterNumber;
+      }
+      if (progress !== null) {
+        update.progress = progress;
+      }
+    }
+
+    await bookmarkRef.set(update, { merge: true });
+    return NextResponse.json({ ok: true, action });
+  } catch {
+    return NextResponse.json({ error: 'Bookmark update failed' }, { status: 500 });
   }
 }

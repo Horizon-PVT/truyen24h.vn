@@ -1,137 +1,162 @@
-/**
- * PayOS webhook — credits coins (and optionally a 30-day VIP window)
- * to a user after a confirmed payment.
- *
- *   POST /api/webhooks/payos
- *
- * Migrated from Firebase client SDK → Admin SDK on 2026-05-29. The client
- * SDK uses long-lived gRPC streams which fail intermittently on Vercel
- * serverless ("Failed to get document because the client is offline"),
- * meaning paid users would sometimes never receive their coins. Admin
- * SDK uses plain HTTPS and is reliable.
- *
- * The webhook is idempotent: if it ever fires twice for the same order
- * we short-circuit at the `status === "PAID"` check.
- */
 import { NextResponse } from 'next/server';
+import type { Transaction as FirestoreTransaction } from 'firebase-admin/firestore';
+import { Timestamp } from 'firebase-admin/firestore';
 import { payos } from '@/services/payos';
-import { adminDb } from '@/lib/firebaseAdmin';
-import { FieldValue, Timestamp } from 'firebase-admin/firestore';
+import { adminDb, FieldValue } from '@/lib/firebaseAdmin';
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
+type PayOSWebhookData = {
+  orderCode: number;
+  amount: number;
+  description?: string;
+  reference?: string;
+  paymentLinkId?: string;
+  transactionDateTime?: string;
+};
+
+type PayOSWebhookPayload = Parameters<typeof payos.webhooks.verify>[0];
+
+type PayOSOrder = {
+  uid?: unknown;
+  packId?: unknown;
+  amount?: unknown;
+  coins?: unknown;
+  isMonthly?: unknown;
+  vipDays?: unknown;
+  status?: unknown;
+};
+
+function asPositiveNumber(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null;
+  return value;
+}
+
+function addDays(date: Date, days: number): Date {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
 
 export async function POST(request: Request) {
+  let body: unknown;
   try {
-    const body = await request.json();
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
 
-    // 1) Drop PayOS's own webhook ping (orderCode 123 is their test value).
-    if (body?.data?.orderCode === 123) {
-      return NextResponse.json({ message: 'Test Webhook: OK' });
-    }
+  let webhookData: PayOSWebhookData;
+  try {
+    webhookData = (await payos.webhooks.verify(body as PayOSWebhookPayload)) as PayOSWebhookData;
+  } catch {
+    return NextResponse.json({ error: 'Invalid signature' }, { status: 400 });
+  }
 
-    // 2) Verify HMAC signature so a bad actor can't credit themselves.
-    let webhookData;
-    try {
-      webhookData = await payos.webhooks.verify(body);
-    } catch (e) {
-      console.error('[PayOS] Invalid webhook signature:', e);
-      return NextResponse.json({ error: 'Invalid signature' }, { status: 400 });
-    }
+  const orderCode = asPositiveNumber(webhookData.orderCode);
+  const paidAmount = asPositiveNumber(webhookData.amount);
+  if (!orderCode || !paidAmount) {
+    return NextResponse.json({ error: 'Invalid webhook data' }, { status: 400 });
+  }
 
-    const orderCode = webhookData.orderCode;
-    const amount = webhookData.amount;
-    const description = webhookData.description;
+  const db = adminDb();
+  const orderRef = db.doc(`orders/${orderCode}`);
 
-    console.log(`[PayOS] Payment ${amount}đ for order ${orderCode}`);
+  try {
+    const result = await db.runTransaction(async (tx: FirestoreTransaction) => {
+      const orderSnap = await tx.get(orderRef);
+      if (!orderSnap.exists) {
+        return { message: 'Order not found but acknowledged' };
+      }
 
-    const db = adminDb();
-    const orderRef = db.collection('orders').doc(String(orderCode));
-    const orderSnap = await orderRef.get();
+      const order = orderSnap.data() as PayOSOrder;
+      if (order.status === 'PAID') {
+        return { message: 'Order already paid' };
+      }
 
-    if (!orderSnap.exists) {
-      // 200 here, not 404 — PayOS retries non-2xx and we don't want loops
-      // if the order document was wiped or wasn't created by our app.
-      console.warn(`[PayOS] order ${orderCode} not found in Firestore`);
-      return NextResponse.json(
-        { message: 'Order not found but acknowledged' },
-        { status: 200 },
-      );
-    }
+      const uid = typeof order.uid === 'string' ? order.uid : '';
+      const expectedAmount = asPositiveNumber(order.amount);
+      const coins = asPositiveNumber(order.coins);
+      if (!uid || !expectedAmount || !coins) {
+        tx.set(
+          orderRef,
+          {
+            status: 'PAYMENT_REJECTED',
+            rejectionReason: 'invalid_server_order',
+            actualAmount: paidAmount,
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        );
+        return { message: 'Invalid server order data' };
+      }
 
-    const orderData = orderSnap.data() as {
-      uid: string;
-      coins: number;
-      amount: number;
-      packId?: string;
-      isMonthly?: boolean;
-      status: string;
-    };
+      if (paidAmount !== expectedAmount) {
+        tx.set(
+          orderRef,
+          {
+            status: 'PAYMENT_MISMATCH',
+            actualAmount: paidAmount,
+            expectedAmount,
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        );
+        return { message: 'Payment amount mismatch recorded' };
+      }
 
-    if (orderData.status === 'PAID') {
-      return NextResponse.json({ message: 'Order already paid' });
-    }
+      if (order.status !== 'PENDING') {
+        return { message: 'Order is not pending' };
+      }
 
-    if (!orderData.uid || !orderData.coins) {
-      console.error(`[PayOS] Order ${orderCode} missing uid/coins`, orderData);
-      return NextResponse.json({ message: 'Order malformed' }, { status: 200 });
-    }
-
-    // 3) Credit the user. Use a transaction so we never race against
-    //    another path that mutates the same user doc.
-    await db.runTransaction(async (tx) => {
-      const userRef = db.collection('users').doc(orderData.uid);
-      const userSnap = await tx.get(userRef);
-
-      // Compute the new VIP window for monthly packs. We extend off the
-      // existing expiry if it's still in the future, otherwise start fresh
-      // from "now". 30 days = 2_592_000_000 ms.
-      const updates: any = {
-        coins: FieldValue.increment(orderData.coins),
-        lastTopUpAt: FieldValue.serverTimestamp(),
-        totalSpentVnd: FieldValue.increment(orderData.amount || amount || 0),
+      const userRef = db.doc(`users/${uid}`);
+      const transactionRef = db.doc(`transactions/payos_${orderCode}`);
+      const userUpdate: Record<string, unknown> = {
+        coins: FieldValue.increment(coins),
+        updatedAt: FieldValue.serverTimestamp(),
       };
 
-      if (orderData.isMonthly || orderData.packId === 'monthly') {
-        const nowMs = Date.now();
-        const existing = userSnap.exists
-          ? userSnap.data()?.vipUntil
-          : undefined;
-        const baseMs =
-          existing instanceof Timestamp ? existing.toMillis() : nowMs;
-        const fromMs = baseMs > nowMs ? baseMs : nowMs;
-        const newMs = fromMs + 30 * 24 * 60 * 60 * 1000;
-        updates.vipUntil = Timestamp.fromMillis(newMs);
-        updates.vipPlan = 'monthly';
+      if (order.isMonthly === true) {
+        const vipDays = asPositiveNumber(order.vipDays) || 30;
+        userUpdate.vipPlan = 'monthly';
+        userUpdate.vipUntil = Timestamp.fromDate(addDays(new Date(), vipDays));
       }
 
-      if (userSnap.exists) {
-        tx.update(userRef, updates);
-      } else {
-        // Edge case: user document was deleted but they paid anyway.
-        tx.set(userRef, { ...updates, uid: orderData.uid }, { merge: true });
-      }
+      tx.set(userRef, userUpdate, { merge: true });
+      tx.set(
+        orderRef,
+        {
+          status: 'PAID',
+          paidAt: FieldValue.serverTimestamp(),
+          actualAmount: paidAmount,
+          paymentReference: webhookData.reference || '',
+          paymentLinkId: webhookData.paymentLinkId || '',
+          paymentDescription: webhookData.description || '',
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+      tx.set(
+        transactionRef,
+        {
+          type: order.isMonthly === true ? 'PAYOS_MONTHLY_VIP' : 'PAYOS_TOPUP',
+          provider: 'payos',
+          orderCode,
+          uid,
+          packId: typeof order.packId === 'string' ? order.packId : '',
+          amount: expectedAmount,
+          coins,
+          isMonthly: order.isMonthly === true,
+          status: 'PAID',
+          reference: webhookData.reference || '',
+          createdAt: FieldValue.serverTimestamp(),
+        },
+        { merge: false }
+      );
 
-      tx.update(orderRef, {
-        status: 'PAID',
-        paidAt: FieldValue.serverTimestamp(),
-        actualAmount: amount,
-        webhookDescription: description || null,
-      });
+      return { message: 'Payment credited' };
     });
 
-    console.log(
-      `[PayOS] +${orderData.coins} xu → user ${orderData.uid}` +
-        (orderData.isMonthly ? ' (+30d VIP)' : ''),
-    );
-
-    return NextResponse.json({ message: 'Giao dịch thành công' });
-  } catch (error: any) {
-    console.error('[PayOS Webhook] System error:', error);
-    // Return 500 so PayOS retries — we want to recover transient failures.
-    return NextResponse.json(
-      { error: error?.message || 'Internal error' },
-      { status: 500 },
-    );
+    return NextResponse.json(result);
+  } catch {
+    return NextResponse.json({ error: 'PayOS webhook processing failed' }, { status: 500 });
   }
 }

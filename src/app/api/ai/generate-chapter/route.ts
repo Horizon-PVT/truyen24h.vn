@@ -18,8 +18,8 @@ export const runtime = 'nodejs';
 export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
-  const auth = authorizeAdmin(req);
-  if (!auth.ok) return NextResponse.json({ error: auth.reason }, { status: 401 });
+  const auth = await authorizeAdmin(req);
+  if (!auth.ok) return NextResponse.json({ error: auth.reason }, { status: auth.status || 401 });
 
   try {
     const body = await req.json();
@@ -39,8 +39,9 @@ export async function POST(req: NextRequest) {
     });
 
     return NextResponse.json({ ok: true, chapter });
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error('[ai/generate-chapter] error', err);
-    return NextResponse.json({ error: err.message || 'Generation failed' }, { status: 500 });
+    const message = err instanceof Error ? err.message : 'Generation failed';
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

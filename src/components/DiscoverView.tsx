@@ -5,6 +5,7 @@ import { useState, useEffect } from 'react';
 import Pagination from './Pagination';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { collection, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
+import { isPublicItem } from '../lib/visibilityGuard';
 
 interface DiscoverViewProps {
   onNovelSelect: (novel: Novel) => void;
@@ -33,10 +34,12 @@ export default function DiscoverView({ onNovelSelect }: DiscoverViewProps) {
       limit(visibleLimit)
     );
     const unsubscribeNovels = onSnapshot(qNovels, (snapshot) => {
-      const fetchedNovels = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Novel[];
+      const fetchedNovels = snapshot.docs
+        .map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        }))
+        .filter(isPublicItem) as Novel[];
       setDynamicNovels(fetchedNovels);
       setLoading(false);
     }, (error) => {

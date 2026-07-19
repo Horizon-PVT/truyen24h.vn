@@ -1,5 +1,5 @@
 /**
- * GET /api/admin/deploy-rules?token=<ADMIN_API_TOKEN>
+ * GET /api/admin/deploy-rules
  *
  * Pushes the firestore.rules file in this repo to Firebase Console
  * (cloud.firestore release). This lets the admin update rules with
@@ -14,14 +14,13 @@
  *   Vercel already has (matching the one our other admin routes
  *   use) so there's no extra setup.
  *
- * Auth: ?token= must match ADMIN_API_TOKEN env var, OR header
- * x-admin-email must be a whitelisted admin.
+ * Auth: authorizeAdmin() via Firebase ID token or ADMIN_API_TOKEN bearer/header.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { isAdmin } from '@/lib/admin';
+import { authorizeAdmin } from '@/lib/apiAuth';
 
 export const runtime = 'nodejs';
 export const maxDuration = 30;
@@ -85,16 +84,8 @@ async function getAccessToken(sa: any): Promise<string> {
 }
 
 export async function GET(req: NextRequest) {
-  // Auth: query token OR admin email header
-  const qToken = req.nextUrl.searchParams.get('token');
-  const adminToken = process.env.ADMIN_API_TOKEN;
-  const headerEmail = req.headers.get('x-admin-email');
-  const ok =
-    (qToken && adminToken && qToken === adminToken) ||
-    (headerEmail && isAdmin(headerEmail));
-  if (!ok) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  const auth = await authorizeAdmin(req);
+  if (!auth.ok) return NextResponse.json({ error: auth.reason }, { status: auth.status || 401 });
 
   try {
     const saRaw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;

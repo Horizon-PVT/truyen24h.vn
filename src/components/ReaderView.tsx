@@ -1,12 +1,12 @@
-import { ArrowLeft, ArrowRight, Settings, Menu, X, ChevronLeft, ChevronRight, List, AlertTriangle, Volume2, Loader2, Play, Pause, Crown, Lock, Unlock, MessageSquare, Send } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Settings, Menu, X, ChevronLeft, ChevronRight, List, AlertTriangle, Volume2, Loader2, Play, Pause, Crown, Lock, Unlock, MessageSquare, Send, Trash2 } from 'lucide-react';
 import { useRef } from 'react';
 import { Novel, Chapter, UserProfile, InlineComment } from '../types';
 import { useState, useEffect } from 'react';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, handleFirestoreError, OperationType, auth, storage } from '../firebase';
-import { doc, setDoc, serverTimestamp, onSnapshot, getDoc, collection, query, orderBy, addDoc } from 'firebase/firestore';
+import { doc, serverTimestamp, onSnapshot, getDoc, collection, query, orderBy, addDoc, deleteDoc } from 'firebase/firestore';
 import { useAuth } from '@/contexts/AuthContext';
-import { isChapterUnlockedByUser, isVipActive } from '@/lib/vip';
+import { isChapterUnlockedByUser } from '@/lib/vip';
 
 interface ReaderViewProps {
   novel: Novel;
@@ -40,6 +40,8 @@ export default function ReaderView({ novel, chapter, onBack, onChapterChange, on
   const [commentDraft, setCommentDraft] = useState('');
   const [highlightPosition, setHighlightPosition] = useState({ top: 0, left: 0 });
   const [showSidebarThread, setShowSidebarThread] = useState<number | null>(null);
+  const [confirmingCommentId, setConfirmingCommentId] = useState<string | null>(null);
+  const [deletingCommentId, setDeletingCommentId] = useState<string | null>(null);
 
   // Load inline comments
   useEffect(() => {
@@ -125,64 +127,78 @@ export default function ReaderView({ novel, chapter, onBack, onChapterChange, on
   // Use AuthContext instead of duplicate listener
   const { userProfile } = useAuth();
 
+  const formatCommentDate = (createdAt: unknown) => {
+    if (!createdAt) return 'vừa xong';
+    if (typeof createdAt !== 'object') return 'vừa xong';
+
+    const value = createdAt as { toDate?: () => Date; toMillis?: () => number; seconds?: number };
+    if (typeof value.toDate === 'function') {
+      return value.toDate().toLocaleDateString('vi-VN');
+    }
+    if (typeof value.toMillis === 'function') {
+      return new Date(value.toMillis()).toLocaleDateString('vi-VN');
+    }
+    if (typeof value.seconds === 'number') {
+      return new Date(value.seconds * 1000).toLocaleDateString('vi-VN');
+    }
+    return 'vừa xong';
+  };
+
+  const handleInlineCommentDelete = async (commentId: string) => {
+    const currentUser = auth.currentUser;
+    if (!currentUser) {
+      if (onLogin) onLogin();
+      return;
+    }
+
+    setDeletingCommentId(commentId);
+    const path = `novels/${novel.id}/chapters/${chapter.id}/inline_comments/${commentId}`;
+    try {
+      await deleteDoc(doc(db, path));
+      setConfirmingCommentId(null);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, path);
+    } finally {
+      setDeletingCommentId(null);
+    }
+  };
+
   const handleUnlockChapter = async () => {
     if (!auth.currentUser || !userProfile) {
       if (onLogin) return onLogin();
       return alert('Vui lòng đăng nhập!');
     }
-    const price = chapter.price || 50;
-    if ((userProfile.coins || 0) < price) {
-      return alert('Bạn không đủ Xu. Vui lòng nạp thêm Xu để tiếp tục!');
-    }
-    
     setIsUnlocking(true);
     try {
-      const { writeBatch, increment } = await import('firebase/firestore');
-      const batch = writeBatch(db);
-
-      // 1. Trừ xu người mua + cập nhật danh sách chương đã mở
-      const buyerRef = doc(db, 'users', auth.currentUser.uid);
-      batch.set(buyerRef, {
-        coins: userProfile.coins - price,
-        unlockedChapters: [...(userProfile.unlockedChapters || []), chapter.id]
-      }, { merge: true });
-
-      // 2. Chuyển 60% Xu cho tác giả (nếu người mua không phải tác giả)
-      if (novel.authorId && novel.authorId !== auth.currentUser.uid) {
-        const authorShare = Math.floor(price * 0.6);
-        const platformFee = price - authorShare;
-
-        const authorRef = doc(db, 'users', novel.authorId);
-        batch.set(authorRef, {
-          coins: increment(authorShare)
-        }, { merge: true });
-
-        // 3. Ghi vào sổ giao dịch
-        const logRef = doc(collection(db, 'transactions'));
-        batch.set(logRef, {
-          type: 'UNLOCK_CHAPTER',
-          chapterId: chapter.id,
+      const idToken = await auth.currentUser.getIdToken();
+      const res = await fetch('/api/unlock-chapter', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({
           novelId: novel.id,
-          buyerId: auth.currentUser.uid,
-          authorId: novel.authorId,
-          price: price,
-          authorShare: authorShare,
-          platformFee: platformFee,
-          createdAt: serverTimestamp()
-        });
+          chapterId: chapter.id,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (res.status === 402) {
+          return alert('Bạn không đủ Xu. Vui lòng nạp thêm Xu để tiếp tục!');
+        }
+        throw new Error(data.error || 'Unlock failed');
       }
 
-      await batch.commit();
     } catch (e) {
       console.error(e);
       alert('Có lỗi khi mở khóa. Quý khách vui lòng thử lại.');
+    } finally {
+      setIsUnlocking(false);
     }
-    setIsUnlocking(false);
   };
 
-  // VIP monthly unlocks all VIP chapters; otherwise check per-chapter purchase.
   const isChapterLocked = !isChapterUnlockedByUser(chapter.id, !!chapter.isVip, userProfile);
-  const vipActive = isVipActive(userProfile);
 
   const [audioQueue, setAudioQueue] = useState<string[]>([]);
 
@@ -317,13 +333,23 @@ export default function ReaderView({ novel, chapter, onBack, onChapterChange, on
       const path = `users/${user.uid}/bookshelf/${novel.id}`;
 
       try {
-        await setDoc(doc(db, path), {
-          novelId: novel.id,
-          lastChapterId: chapter.id,
-          lastChapterNumber: chapter.chapterNumber,
-          progress: progress,
-          updatedAt: serverTimestamp()
-        }, { merge: true });
+        const idToken = await user.getIdToken();
+        const res = await fetch('/api/bookmark/toggle', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            authorization: `Bearer ${idToken}`,
+          },
+          body: JSON.stringify({
+            action: 'progress',
+            novelId: novel.id,
+            lastChapterId: chapter.id,
+            lastChapterNumber: chapter.chapterNumber,
+            progress,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Progress save failed');
       } catch (error) {
         handleFirestoreError(error, OperationType.WRITE, path);
       }
@@ -756,21 +782,61 @@ export default function ReaderView({ novel, chapter, onBack, onChapterChange, on
                 {(groupedComments[showSidebarThread] || []).length === 0 ? (
                   <div className="text-center text-muted text-sm py-10">Chưa có bình luận nào cho đoạn này. Bôi đen chữ để khơi mào nhé!</div>
                 ) : (
-                  (groupedComments[showSidebarThread] || []).map(comment => (
+                  (groupedComments[showSidebarThread] || []).map(comment => {
+                    const canDelete = auth.currentUser?.uid === comment.userId;
+                    const isConfirming = confirmingCommentId === comment.id;
+                    const isDeleting = deletingCommentId === comment.id;
+
+                    return (
                     <div key={comment.id} className="flex gap-3">
                       <img src={comment.userAvatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${comment.userId}`} alt={comment.userName} className="size-8 rounded-full bg-background-light object-cover shrink-0" />
-                      <div className="flex flex-col">
-                        <div className="flex items-baseline gap-2">
-                          <span className="font-bold text-sm text-text-main">{comment.userName}</span>
-                          <span className="text-[10px] text-muted">{new Date(comment.createdAt?.seconds * 1000).toLocaleDateString()}</span>
+                      <div className="flex flex-col flex-1 min-w-0">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex flex-wrap items-baseline gap-2">
+                            <span className="font-bold text-sm text-text-main">{comment.userName}</span>
+                            <span className="text-[10px] text-muted">{formatCommentDate(comment.createdAt)}</span>
+                          </div>
+                          {canDelete && (
+                            isConfirming ? (
+                              <div className="flex items-center gap-1 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => handleInlineCommentDelete(comment.id)}
+                                  disabled={isDeleting}
+                                  className="px-2 py-1 rounded-full bg-red-500 text-white text-[10px] font-black uppercase tracking-widest disabled:opacity-50"
+                                >
+                                  {isDeleting ? 'Đang xoá' : 'Xoá'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmingCommentId(null)}
+                                  disabled={isDeleting}
+                                  className="px-2 py-1 rounded-full bg-background-light text-muted text-[10px] font-black uppercase tracking-widest disabled:opacity-50"
+                                >
+                                  Huỷ
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => setConfirmingCommentId(comment.id)}
+                                className="p-1 text-muted hover:text-red-500 transition-colors shrink-0"
+                                aria-label="Xoá bình luận"
+                                title="Xoá bình luận"
+                              >
+                                <Trash2 className="size-4" />
+                              </button>
+                            )
+                          )}
                         </div>
                         {comment.selectedText && (
-                          <span className="text-xs italic text-primary mt-1 select-none">"{comment.selectedText}"</span>
+                          <span className="text-xs italic text-primary mt-1 select-none">&quot;{comment.selectedText}&quot;</span>
                         )}
                         <p className="text-sm mt-1 text-text-main/90 leading-relaxed font-medium">{comment.content}</p>
                       </div>
                     </div>
-                  ))
+                    );
+                  })
                 )}
               </div>
 

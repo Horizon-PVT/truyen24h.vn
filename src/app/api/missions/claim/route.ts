@@ -1,52 +1,92 @@
-/**
- * POST /api/missions/claim
- *
- * Claims the coin reward for a completed mission. Idempotent: claiming
- * twice in the same day no-ops on the second call.
- *
- * Body: { uid: string, missionId: string }
- */
-import { NextRequest, NextResponse } from 'next/server';
-import { adminDb, serverTimestamp, FieldValue } from '@/lib/firebaseAdmin';
-import { missionById, todayKey } from '@/lib/missions';
+import { NextResponse } from 'next/server';
+import type { Transaction } from 'firebase-admin/firestore';
+import { requireFirebaseUser } from '@/lib/apiAuth';
+import { adminDb, FieldValue } from '@/lib/firebaseAdmin';
 
-export const runtime = 'nodejs';
+const MISSION_REWARDS: Record<string, { target: number; rewardCoins: number }> = {
+  daily_read: { target: 1, rewardCoins: 5 },
+  daily_bookmark: { target: 1, rewardCoins: 5 },
+  daily_checkin: { target: 1, rewardCoins: 10 },
+};
 
-export async function POST(req: NextRequest) {
+type MissionClaimBody = {
+  missionId?: unknown;
+};
+
+function readMissionId(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const missionId = value.trim();
+  if (!/^[a-zA-Z0-9_-]{1,80}$/.test(missionId)) return null;
+  return missionId;
+}
+
+export async function POST(request: Request) {
+  const auth = await requireFirebaseUser(request);
+  if (!auth.ok) return auth.response;
+
+  let body: MissionClaimBody;
   try {
-    const body = await req.json().catch(() => ({}));
-    const uid = body.uid as string | undefined;
-    const missionId = body.missionId as string | undefined;
-    if (!uid || !missionId) return NextResponse.json({ error: 'Missing uid or missionId' }, { status: 400 });
+    body = (await request.json()) as MissionClaimBody;
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
 
-    const mission = missionById(missionId);
-    if (!mission) return NextResponse.json({ error: 'Unknown mission' }, { status: 400 });
-    if (mission.reward <= 0) return NextResponse.json({ error: 'Mission has no reward' }, { status: 400 });
+  const missionId = readMissionId(body.missionId);
+  if (!missionId) {
+    return NextResponse.json({ error: 'Missing missionId' }, { status: 400 });
+  }
 
-    const db = adminDb();
-    const date = todayKey();
-    const progressRef = db.doc(`users/${uid}/daily_missions/${date}/progress/${missionId}`);
-    const userRef = db.doc(`users/${uid}`);
+  const mission = MISSION_REWARDS[missionId];
+  if (!mission) {
+    return NextResponse.json({ error: 'Unknown mission' }, { status: 400 });
+  }
 
-    const result = await db.runTransaction(async (tx) => {
-      const snap = await tx.get(progressRef);
-      if (!snap.exists) return { error: 'Mission not started yet' };
-      const data = snap.data() as any;
-      if ((data.count || 0) < mission.goal) return { error: 'Not completed yet' };
-      if (data.claimed) return { error: 'Đã nhận thưởng rồi', alreadyClaimed: true };
+  const uid = auth.user.uid;
+  const db = adminDb();
+  const userRef = db.doc(`users/${uid}`);
+  const missionRef = db.doc(`users/${uid}/missions/${missionId}`);
 
-      tx.update(progressRef, { claimed: true, claimedAt: serverTimestamp() });
-      tx.update(userRef, {
-        coins: FieldValue.increment(mission.reward),
-        updatedAt: serverTimestamp(),
-      });
-      return { ok: true, reward: mission.reward };
+  try {
+    const result = await db.runTransaction(async (tx: Transaction) => {
+      const snap = await tx.get(missionRef);
+      const data = snap.data();
+      const progress = Number(data?.progress || 0);
+
+      if (data?.claimedAt) {
+        return { alreadyClaimed: true, rewardCoins: 0 };
+      }
+
+      if (progress < mission.target) {
+        return { notReady: true, rewardCoins: 0 };
+      }
+
+      tx.set(
+        userRef,
+        {
+          coins: FieldValue.increment(mission.rewardCoins),
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+      tx.set(
+        missionRef,
+        {
+          claimedAt: FieldValue.serverTimestamp(),
+          rewardCoins: mission.rewardCoins,
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+
+      return { alreadyClaimed: false, rewardCoins: mission.rewardCoins };
     });
 
-    if (result.error) return NextResponse.json(result, { status: 400 });
+    if ('notReady' in result) {
+      return NextResponse.json({ error: 'Mission is not ready to claim' }, { status: 400 });
+    }
+
     return NextResponse.json(result);
-  } catch (err: any) {
-    console.error('[missions/claim] error', err);
-    return NextResponse.json({ error: err.message || 'Claim failed' }, { status: 500 });
+  } catch {
+    return NextResponse.json({ error: 'Mission claim failed' }, { status: 500 });
   }
 }

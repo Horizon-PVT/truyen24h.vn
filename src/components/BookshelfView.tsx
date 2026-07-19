@@ -3,7 +3,7 @@ import { Novel, UserProfile } from '../types';
 import React, { useState, useEffect } from 'react';
 import { User } from 'firebase/auth';
 import { db, handleFirestoreError, OperationType } from '../firebase';
-import { collection, query, onSnapshot, deleteDoc, doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, query, onSnapshot, doc, getDoc } from 'firebase/firestore';
 import { getDailyGreeting } from '../services/geminiService';
 
 interface BookshelfViewProps {
@@ -63,22 +63,25 @@ export default function BookshelfView({ onNovelSelect, user, onLogin }: Bookshel
 
   const handleCheckIn = async () => {
     if (!user || hasCheckedIn) return;
-    const path = `users/${user.uid}/profile/stats`;
     try {
-      const today = new Date();
-      const newStreak = checkInStreak + 1;
-      
-      await setDoc(doc(db, path), {
-        lastCheckIn: serverTimestamp(),
-        streak: newStreak,
-        points: (newStreak * 10) + 50 // Example points
-      }, { merge: true });
-      
+      const idToken = await user.getIdToken();
+      const res = await fetch('/api/checkin/claim', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({})
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Check-in failed');
+
       setHasCheckedIn(true);
-      setCheckInStreak(newStreak);
+      setCheckInStreak(Number(data.streak || checkInStreak + 1));
       setShowCheckInSuccess(true);
     } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, path);
+      console.error("Check-in error:", error);
+      alert('Không thể điểm danh lúc này. Vui lòng thử lại sau.');
     }
   };
 
@@ -131,12 +134,25 @@ export default function BookshelfView({ onNovelSelect, user, onLogin }: Bookshel
 
   const confirmDelete = async () => {
     if (!user || !novelToDelete) return;
-    const path = `users/${user.uid}/bookshelf/${novelToDelete}`;
     try {
-      await deleteDoc(doc(db, path));
+      const idToken = await user.getIdToken();
+      const res = await fetch('/api/bookmark/toggle', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({
+          action: 'remove',
+          novelId: novelToDelete,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Bookmark delete failed');
       setNovelToDelete(null);
     } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, path);
+      console.error(error);
+      alert('Không thể xóa truyện khỏi tủ sách lúc này.');
     }
   };
 
@@ -236,7 +252,7 @@ export default function BookshelfView({ onNovelSelect, user, onLogin }: Bookshel
               <h2 className="text-2xl font-black text-text-main tracking-tight mb-2">
                 Chào mừng trở lại, <span className="text-primary">{user?.displayName}</span>!
               </h2>
-              <p className="text-muted font-medium italic">"{greeting}"</p>
+              <p className="text-muted font-medium italic">&quot;{greeting}&quot;</p>
             </div>
           </div>
 

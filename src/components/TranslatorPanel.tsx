@@ -17,16 +17,16 @@ import { useEffect, useState, useMemo } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { db } from '@/firebase';
 import { collection, onSnapshot, orderBy, query, limit } from 'firebase/firestore';
+import { getAdminAuthHeaders } from '@/lib/adminClientAuth';
 import {
   Languages, Loader2, Play, AlertCircle, CheckCircle2, FileText,
-  BookOpen, Pause, ArrowRight,
+  BookOpen,
 } from 'lucide-react';
 
 interface NovelRow { id: string; title: string; latestChapterNumber?: number; }
 
 export default function TranslatorPanel() {
-  const { user, isAdminUser } = useAuth();
-  const adminEmail = user?.email || '';
+  const { isAdminUser } = useAuth();
 
   const [novels, setNovels] = useState<NovelRow[]>([]);
   const [novelId, setNovelId] = useState<string>('');
@@ -78,7 +78,7 @@ export default function TranslatorPanel() {
   const selectedNovel = novels.find((n) => n.id === novelId);
 
   async function startTranslate() {
-    if (!novelId || splits.length === 0 || !adminEmail) return;
+    if (!novelId || splits.length === 0) return;
     setBusy(true);
     setResults([]);
     setProgress({ done: 0, total: splits.length });
@@ -87,9 +87,10 @@ export default function TranslatorPanel() {
       const chapterNumber = startNumber + i;
       setProgress({ done: i, total: splits.length, current: `Chương ${chapterNumber}` });
       try {
+        const authHeaders = await getAdminAuthHeaders();
         const r = await fetch('/api/admin/translate-chapter', {
           method: 'POST',
-          headers: { 'content-type': 'application/json', 'x-admin-email': adminEmail },
+          headers: { 'content-type': 'application/json', ...authHeaders },
           body: JSON.stringify({
             raw: splits[i],
             chapterNumber,
@@ -101,8 +102,8 @@ export default function TranslatorPanel() {
         const data = await r.json();
         if (!r.ok) throw new Error(data.error || 'Translate failed');
         setResults((prev) => [...prev, { chapterNumber, title: data.title, ok: true }]);
-      } catch (e: any) {
-        setResults((prev) => [...prev, { chapterNumber, title: '', ok: false, error: e.message }]);
+      } catch (e: unknown) {
+        setResults((prev) => [...prev, { chapterNumber, title: '', ok: false, error: e instanceof Error ? e.message : 'Translate failed' }]);
       }
     }
     setProgress({ done: splits.length, total: splits.length });
