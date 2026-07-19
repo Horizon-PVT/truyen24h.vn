@@ -1,9 +1,14 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/firebase-backend';
 import { NOVELS } from '@/constants';
 import { doc, setDoc } from 'firebase/firestore';
+import { authorizeAdmin } from '@/lib/apiAuth';
 
-export async function GET() {
+export async function POST(req: NextRequest) {
+  if (process.env.NODE_ENV === 'production') { return NextResponse.json({ error: 'Forbidden' }, { status: 403 }); }
+  const auth = await authorizeAdmin(req);
+  if (!auth.ok) return NextResponse.json({ error: auth.reason }, { status: auth.status || 401 });
+
   try {
     let novelCount = 0;
     
@@ -28,7 +33,7 @@ export async function GET() {
     }
 
     return NextResponse.json({ message: `Đã Migrate thành công ${novelCount} bộ truyện!` });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  } catch (error: unknown) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : 'Migrate failed' }, { status: 500 });
   }
 }

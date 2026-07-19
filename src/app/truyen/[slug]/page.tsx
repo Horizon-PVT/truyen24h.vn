@@ -18,6 +18,7 @@ import { absoluteUrl, SITE_NAME } from '@/lib/site';
 import { NovelJsonLd } from '@/components/JsonLd';
 import { adminDb } from '@/lib/firebaseAdmin';
 import { serializeFirestore } from '@/lib/serialize';
+import { isPublicItem } from '@/lib/visibilityGuard';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 60; // ISR-style refresh hint, in case Next caches
@@ -25,7 +26,9 @@ export const revalidate = 60; // ISR-style refresh hint, in case Next caches
 async function fetchNovel(slug: string) {
   const snap = await adminDb().collection('novels').doc(slug).get();
   if (!snap.exists) return null;
-  return serializeFirestore({ id: snap.id, ...snap.data() }) as any;
+  const data = serializeFirestore({ id: snap.id, ...snap.data() }) as any;
+  if (!isPublicItem(data)) return null;
+  return data;
 }
 
 export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }) {

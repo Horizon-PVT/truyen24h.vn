@@ -8,6 +8,7 @@
 import { MetadataRoute } from 'next';
 import { adminDb } from '@/lib/firebaseAdmin';
 import { getSiteUrl } from '@/lib/site';
+import { isPublicItem } from '@/lib/visibilityGuard';
 
 export const dynamic = 'force-dynamic';
 
@@ -28,30 +29,34 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
 
   try {
     const snap = await adminDb().collection('novels').get();
-    const novelUrls: MetadataRoute.Sitemap = snap.docs.map((d: any) => {
-      const data = d.data() as any;
-      const ms = data.updatedAt?.toMillis?.() ?? Date.now();
-      return {
-        url: `${baseUrl}/truyen/${d.id}`,
-        lastModified: new Date(ms),
-        changeFrequency: 'daily' as const,
-        priority: 0.8,
-      };
-    });
+    const novelUrls: MetadataRoute.Sitemap = snap.docs
+      .filter((d: any) => isPublicItem(d.data()))
+      .map((d: any) => {
+        const data = d.data() as any;
+        const ms = data.updatedAt?.toMillis?.() ?? Date.now();
+        return {
+          url: `${baseUrl}/truyen/${d.id}`,
+          lastModified: new Date(ms),
+          changeFrequency: 'daily' as const,
+          priority: 0.8,
+        };
+      });
 
     let blogUrls: MetadataRoute.Sitemap = [];
     try {
       const blogSnap = await adminDb().collection('blog_posts').get();
-      blogUrls = blogSnap.docs.map((d: any) => {
-        const data = d.data() as any;
-        const ms = data.updatedAt?.toMillis?.() ?? data.createdAt?.toMillis?.() ?? Date.now();
-        return {
-          url: `${baseUrl}/blog/${d.id}`,
-          lastModified: new Date(ms),
-          changeFrequency: 'weekly' as const,
-          priority: 0.7,
-        };
-      });
+      blogUrls = blogSnap.docs
+        .filter((d: any) => isPublicItem(d.data()))
+        .map((d: any) => {
+          const data = d.data() as any;
+          const ms = data.updatedAt?.toMillis?.() ?? data.createdAt?.toMillis?.() ?? Date.now();
+          return {
+            url: `${baseUrl}/blog/${d.id}`,
+            lastModified: new Date(ms),
+            changeFrequency: 'weekly' as const,
+            priority: 0.7,
+          };
+        });
     } catch {
       // Blog collection may not exist yet.
     }

@@ -113,5 +113,13 @@ service cloud.firestore {
       allow read, update, delete: if false;
     }
 
+    // Operator deny rules
+    match /operator_drafts/{document=**} { allow read, write: if false; }
+    match /operator_reviews/{document=**} { allow read, write: if false; }
+    match /operator_publish_logs/{document=**} { allow read, write: if false; }
+    match /operator_rollback_logs/{document=**} { allow read, write: if false; }
+    match /operator_quality_reports/{document=**} { allow read, write: if false; }
+    match /ops_daily_runs/{document=**} { allow read, write: if false; }
+    match /admin_audit_logs/{document=**} { allow read, write: if false; }
   }
 }

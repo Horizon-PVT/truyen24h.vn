@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { Mail, Search, Download, Copy, AlertCircle, Loader2, CheckCircle2, RefreshCw } from 'lucide-react';
+import { getAdminAuthHeaders } from '@/lib/adminClientAuth';
 
 interface Sub {
   id: string;
@@ -20,8 +21,7 @@ interface Sub {
 }
 
 export default function NewsletterAdminClient() {
-  const { user, isAdminUser } = useAuth();
-  const adminEmail = user?.email || '';
+  const { isAdminUser } = useAuth();
 
   const [subs, setSubs] = useState<Sub[]>([]);
   const [loading, setLoading] = useState(true);
@@ -31,25 +31,25 @@ export default function NewsletterAdminClient() {
   const [error, setError] = useState<string | null>(null);
 
   const fetchList = useCallback(async (isPolling = false) => {
-    if (!adminEmail) return;
     if (!isPolling) setLoading(true);
     setRefreshing(true);
     try {
+      const authHeaders = await getAdminAuthHeaders();
       const r = await fetch('/api/admin/newsletter/list', {
-        headers: { 'x-admin-email': adminEmail },
+        headers: authHeaders,
         cache: 'no-store',
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || 'Load failed');
       setSubs(data.subscribers || []);
       setError(null);
-    } catch (e: any) {
-      setError(e.message || 'Lỗi không xác định');
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Loi khong xac dinh');
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [adminEmail]);
+  }, []);
 
   useEffect(() => {
     if (!isAdminUser) return;

@@ -1,120 +1,191 @@
 /**
  * GET /api/admin/daily-run-cron
  *
- * Thin wrapper around POST /api/admin/daily-run designed for Vercel Cron.
- *
- * How Vercel Cron auth works:
- *   - When Vercel triggers a cron job, it sends `Authorization: Bearer <CRON_SECRET>`
- *     where `CRON_SECRET` is auto-set on Vercel projects with cron config.
- *   - We just compare against that env var. Manual hits without it get 401.
- *
- * Defaults: 2 new novels + 5 chapter continuations per run.
- * Override with query params: `?newNovels=3&continueNovels=10`.
- *
- * Uses Firebase Admin SDK so writes bypass Firestore security rules
- * (we trust this server-side route by virtue of the bearer token check).
+ * Vercel Cron wrapper for AI daily generation. P0 rule: generate operator
+ * drafts only. No public novels/chapters/blog posts are published here.
  */
 import { NextRequest, NextResponse } from 'next/server';
+import { authorizeAdmin } from '@/lib/apiAuth';
 import { adminDb, serverTimestamp } from '@/lib/firebaseAdmin';
-import {
-  discoverTrendingTopics,
-  generateNovelOutline,
-  generateChapter,
-} from '@/services/aiStoryService';
-import { buildCoverUrl, buildBannerUrl } from '@/services/aiCoverService';
+import { discoverTrendingTopics, generateChapter, generateNovelOutline } from '@/services/aiStoryService';
+import { buildBannerUrl, buildCoverUrl } from '@/services/aiCoverService';
+import { createOperatorDraft } from '@/lib/operator/drafts';
 
 export const runtime = 'nodejs';
-// Vercel Hobby plan caps maxDuration at 60s.
 export const maxDuration = 60;
+
+type DailyRunSummary = {
+  startedAt: string;
+  finishedAt: string;
+  newNovelsCreated: Array<{ slug: string; title: string; chapters: number }>;
+  chaptersContinued: Array<{ slug: string; chapterNumber: number }>;
+  errors: Array<{ stage: string; message: string }>;
+};
+
+type ExistingAiNovel = {
+  title?: string;
+  description?: string;
+  genres?: string[];
+  latestChapterNumber?: number;
+  lastCliffhanger?: string;
+};
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 function slugify(input: string): string {
   return input
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
-    .replace(/đ/g, 'd').replace(/Đ/g, 'D')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 80);
 }
 
+async function persistDailyRunReport(
+  db: ReturnType<typeof adminDb>,
+  summary: DailyRunSummary,
+  source: 'cron'
+) {
+  const finishedAt = new Date();
+  const startedAt = new Date(summary.startedAt);
+  const report = {
+    ...summary,
+    finishedAt: finishedAt.toISOString(),
+    source,
+    ok: summary.errors.length === 0,
+    totals: {
+      newNovels: summary.newNovelsCreated.length,
+      newChaptersFromNewNovels: summary.newNovelsCreated.reduce((sum, item) => sum + item.chapters, 0),
+      continuedChapters: summary.chaptersContinued.length,
+      errors: summary.errors.length,
+    },
+    durationMs: finishedAt.getTime() - startedAt.getTime(),
+  };
+
+  try {
+    const id = report.startedAt.replace(/[:.]/g, '-');
+    await db.collection('ops_daily_runs').doc(id).set({
+      ...report,
+      createdAt: serverTimestamp(),
+    });
+  } catch (error) {
+    console.error('Failed to persist cron daily run report:', error);
+  }
+
+  return report;
+}
+
 export async function GET(req: NextRequest) {
-  const authHeader = req.headers.get('authorization') || '';
-  const provided = authHeader.replace(/^Bearer\s+/i, '').trim();
-  const cronSecret = process.env.CRON_SECRET;
-  const adminToken = process.env.ADMIN_API_TOKEN;
-  const ok =
-    (cronSecret && provided === cronSecret) ||
-    (adminToken && provided === adminToken);
-  if (!ok) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  return handleDailyRunCron(req);
+}
+
+export async function POST(req: NextRequest) {
+  return handleDailyRunCron(req);
+}
+
+async function handleDailyRunCron(req: NextRequest) {
+  const auth = await authorizeAdmin(req);
+  if (!auth.ok) {
+    return NextResponse.json({ error: auth.reason || 'Unauthorized' }, { status: auth.status || 401 });
   }
 
   const { searchParams } = new URL(req.url);
-  const newNovels = Math.min(Math.max(Number(searchParams.get('newNovels')) || 2, 0), 5);
-  const continueNovels = Math.min(Math.max(Number(searchParams.get('continueNovels')) || 5, 0), 20);
+  let newNovelsVal = Number(searchParams.get('newNovels'));
+  let continueNovelsVal = Number(searchParams.get('continueNovels'));
 
+  if (req.method === 'POST') {
+    try {
+      const body = await req.json().catch(() => ({}));
+      if (body.newNovels !== undefined) newNovelsVal = Number(body.newNovels);
+      if (body.continueNovels !== undefined) continueNovelsVal = Number(body.continueNovels);
+    } catch {}
+  }
+
+  const newNovels = Math.min(Math.max(newNovelsVal || 2, 0), 5);
+  const continueNovels = Math.min(Math.max(continueNovelsVal || 5, 0), 20);
   const db = adminDb();
+  const createdBy = 'cron';
 
-  const summary = {
+  const summary: DailyRunSummary = {
     startedAt: new Date().toISOString(),
     finishedAt: '',
-    newNovelsCreated: [] as Array<{ slug: string; title: string; chapters: number }>,
-    chaptersContinued: [] as Array<{ slug: string; chapterNumber: number }>,
-    errors: [] as Array<{ stage: string; message: string }>,
+    newNovelsCreated: [],
+    chaptersContinued: [],
+    errors: [],
   };
 
   try {
     if (newNovels > 0) {
       const topics = await discoverTrendingTopics({ count: newNovels });
-      for (const t of topics) {
+      for (const topic of topics) {
         try {
-          const outline = await generateNovelOutline({ topic: t.topic, genres: t.suggestedGenres });
+          const outline = await generateNovelOutline({ topic: topic.topic, genres: topic.suggestedGenres });
           const slug = `${slugify(outline.title)}-${Date.now().toString(36).slice(-4)}`;
           const coverUrl = buildCoverUrl(outline.coverPrompt);
           const bannerUrl = buildBannerUrl(outline.coverPrompt, outline.title);
-
-          await db.collection('novels').doc(slug).set({
-            id: slug, title: outline.title, author: outline.author,
-            authorId: 'system-ai', description: outline.description,
-            coverUrl, bannerUrl,
-            genres: outline.genres, tags: outline.tags,
-            status: 'Đang ra', views: '0', rating: 0,
-            isHot: true, isFull: false, latestChapterNumber: 0,
-            aiAssisted: true, publishedBy: 'cron',
-            hook: outline.hook, coverPrompt: outline.coverPrompt,
-            createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+          const storyDraft = await createOperatorDraft(db, {
+            type: 'story',
+            title: outline.title,
+            slug,
+            content: outline.description,
+            summary: outline.hook,
+            source: 'daily_run_cron',
+            aiAssisted: true,
+            createdBy,
+            targetCollection: 'novels',
+            targetDocId: slug,
+            metadata: {
+              author: outline.author,
+              genres: outline.genres,
+              tags: outline.tags,
+              coverPrompt: outline.coverPrompt,
+              coverUrl,
+              bannerUrl,
+              status: outline.status,
+            },
           });
 
           let previousSummary = '';
           let chaptersWritten = 0;
-          for (let n = 1; n <= 2; n++) {
+          for (let chapterNumber = 1; chapterNumber <= 2; chapterNumber++) {
             const chapter = await generateChapter({
               novelTitle: outline.title,
               novelDescription: outline.description,
               genres: outline.genres,
-              chapterNumber: n,
+              chapterNumber,
               previousSummary,
               targetWordCount: 1700,
             });
             previousSummary = chapter.cliffhanger;
-            const batch = db.batch();
-            batch.set(db.doc(`novels/${slug}/chapters/c${n}`), {
-              id: `c${n}`, title: chapter.title, content: chapter.content,
-              chapterNumber: n, isVip: false, price: 0,
-              publishDate: serverTimestamp(), aiAssisted: true,
+            await createOperatorDraft(db, {
+              type: 'chapter',
+              title: chapter.title,
+              content: chapter.content,
+              summary: chapter.cliffhanger,
+              source: 'daily_run_cron',
+              aiAssisted: true,
+              createdBy,
+              targetCollection: 'novels/{id}/chapters',
+              targetParentId: slug,
+              targetDocId: `c${chapterNumber}`,
+              metadata: {
+                chapterNumber,
+                isVip: false,
+                price: 0,
+                wordCount: chapter.wordCount,
+                parentDraftId: storyDraft.id,
+              },
             });
-            batch.update(db.doc(`novels/${slug}`), {
-              latestChapterNumber: n, updatedAt: serverTimestamp(),
-              lastUpdated: new Date().toISOString(),
-              lastCliffhanger: chapter.cliffhanger,
-            });
-            await batch.commit();
             chaptersWritten++;
           }
           summary.newNovelsCreated.push({ slug, title: outline.title, chapters: chaptersWritten });
-        } catch (e: any) {
-          summary.errors.push({ stage: `new-novel:${t.topic}`, message: e.message });
+        } catch (error) {
+          summary.errors.push({ stage: `new-novel:${topic.topic}`, message: getErrorMessage(error) });
         }
       }
     }
@@ -122,17 +193,17 @@ export async function GET(req: NextRequest) {
     if (continueNovels > 0) {
       const snap = await db.collection('novels')
         .where('aiAssisted', '==', true)
-        .where('status', '==', 'Đang ra')
         .orderBy('updatedAt', 'asc')
         .limit(continueNovels)
         .get();
+
       for (const docSnap of snap.docs) {
         try {
-          const data = docSnap.data() as any;
+          const data = docSnap.data() as ExistingAiNovel;
           const nextNum = (data.latestChapterNumber || 0) + 1;
           const chapter = await generateChapter({
-            novelTitle: data.title,
-            novelDescription: data.description,
+            novelTitle: data.title || 'Truyen chua dat ten',
+            novelDescription: data.description || '',
             genres: data.genres || [],
             chapterNumber: nextNum,
             previousSummary: data.lastCliffhanger || '',
@@ -140,29 +211,36 @@ export async function GET(req: NextRequest) {
           });
           const isVip = nextNum >= 4;
           const price = isVip ? 50 : 0;
-          const batch = db.batch();
-          batch.set(db.doc(`novels/${docSnap.id}/chapters/c${nextNum}`), {
-            id: `c${nextNum}`, title: chapter.title, content: chapter.content,
-            chapterNumber: nextNum, isVip, price,
-            publishDate: serverTimestamp(), aiAssisted: true,
+
+          await createOperatorDraft(db, {
+            type: 'chapter',
+            title: chapter.title,
+            content: chapter.content,
+            summary: chapter.cliffhanger,
+            source: 'daily_run_cron',
+            aiAssisted: true,
+            createdBy,
+            targetCollection: 'novels/{id}/chapters',
+            targetParentId: docSnap.id,
+            targetDocId: `c${nextNum}`,
+            metadata: {
+              chapterNumber: nextNum,
+              isVip,
+              price,
+              wordCount: chapter.wordCount,
+            },
           });
-          batch.update(db.doc(`novels/${docSnap.id}`), {
-            latestChapterNumber: nextNum,
-            updatedAt: serverTimestamp(),
-            lastUpdated: new Date().toISOString(),
-            lastCliffhanger: chapter.cliffhanger,
-          });
-          await batch.commit();
+
           summary.chaptersContinued.push({ slug: docSnap.id, chapterNumber: nextNum });
-        } catch (e: any) {
-          summary.errors.push({ stage: `continue:${docSnap.id}`, message: e.message });
+        } catch (error) {
+          summary.errors.push({ stage: `continue:${docSnap.id}`, message: getErrorMessage(error) });
         }
       }
     }
-  } catch (err: any) {
-    summary.errors.push({ stage: 'top-level', message: err.message });
+  } catch (error) {
+    summary.errors.push({ stage: 'top-level', message: getErrorMessage(error) });
   }
 
-  summary.finishedAt = new Date().toISOString();
-  return NextResponse.json(summary);
+  const report = await persistDailyRunReport(db, summary, 'cron');
+  return NextResponse.json(report);
 }
