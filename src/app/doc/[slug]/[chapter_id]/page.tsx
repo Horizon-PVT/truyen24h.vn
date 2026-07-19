@@ -11,6 +11,7 @@ import { absoluteUrl, SITE_NAME } from '@/lib/site';
 import { ChapterJsonLd } from '@/components/JsonLd';
 import { adminDb } from '@/lib/firebaseAdmin';
 import { serializeFirestore } from '@/lib/serialize';
+import { isPublicItem } from '@/lib/visibilityGuard';
 import type { DocumentData, QueryDocumentSnapshot } from 'firebase-admin/firestore';
 
 export const dynamic = 'force-dynamic';
@@ -37,20 +38,26 @@ async function fetchNovelAndChapter(slug: string, chapterId: string) {
   const db = adminDb();
   const novelSnap = await db.collection('novels').doc(slug).get();
   if (!novelSnap.exists) return null;
+  const novelData = novelSnap.data();
+  if (!isPublicItem(novelData)) return null;
 
   const chapterSnap = await db.doc(`novels/${slug}/chapters/${chapterId}`).get();
-  if (!chapterSnap.exists) return { novel: novelSnap, chapter: null };
+  if (!chapterSnap.exists) return { novel: serializeFirestore({ id: novelSnap.id, ...novelData }) as SerializedNovel, chapter: null };
+  const chapterData = chapterSnap.data();
+  if (!isPublicItem(chapterData)) return null;
 
   // Sibling chapters for the in-reader chapter list.
   const chaptersSnap = await db
     .collection(`novels/${slug}/chapters`)
     .orderBy('chapterNumber', 'asc')
     .get();
-  const chaptersData = chaptersSnap.docs.map((d: QueryDocumentSnapshot<DocumentData>) => ({ id: d.id, ...d.data() }));
+  const chaptersData = chaptersSnap.docs
+    .map((d: QueryDocumentSnapshot<DocumentData>) => ({ id: d.id, ...d.data() }))
+    .filter(isPublicItem);
 
   return {
-    novel: serializeFirestore({ id: novelSnap.id, ...novelSnap.data(), chapters: chaptersData }) as SerializedNovel,
-    chapter: serializeFirestore({ id: chapterSnap.id, ...chapterSnap.data() }) as SerializedChapter,
+    novel: serializeFirestore({ id: novelSnap.id, ...novelData, chapters: chaptersData }) as SerializedNovel,
+    chapter: serializeFirestore({ id: chapterSnap.id, ...chapterData }) as SerializedChapter,
   } satisfies FetchResult;
 }
 

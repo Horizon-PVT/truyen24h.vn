@@ -9,6 +9,7 @@ import Link from 'next/link';
 import { adminDb } from '@/lib/firebaseAdmin';
 import { serializeFirestore } from '@/lib/serialize';
 import { absoluteUrl, SITE_NAME } from '@/lib/site';
+import { isPublicItem } from '@/lib/visibilityGuard';
 import TopNavBarClientWrapper from '@/components/TopNavBarClientWrapper';
 
 export const dynamic = 'force-dynamic';
@@ -47,7 +48,9 @@ async function fetchPosts(): Promise<BlogRow[]> {
       .orderBy('createdAt', 'desc')
       .limit(50)
       .get();
-    return snap.docs.map((d: any) => serializeFirestore({ slug: d.id, ...d.data() })) as BlogRow[];
+    return snap.docs
+      .map((d: any) => serializeFirestore({ slug: d.id, ...d.data() }))
+      .filter(isPublicItem) as BlogRow[];
   } catch {
     return [];
   }

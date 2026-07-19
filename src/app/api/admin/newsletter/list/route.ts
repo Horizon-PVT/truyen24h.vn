@@ -5,7 +5,7 @@
  * collection from the client SDK because the firestore.rules block
  * non-admin reads (privacy). Admin SDK bypasses rules.
  *
- * Auth: admin email via x-admin-email header.
+ * Auth: admin only (Firebase bearer token or x-admin-token).
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { authorizeAdmin } from '@/lib/apiAuth';

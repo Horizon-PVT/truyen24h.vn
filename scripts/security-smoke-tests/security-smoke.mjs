@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 
@@ -21,11 +21,36 @@ const files = {
   creatorStudioView: 'src/components/CreatorStudioView.tsx',
   adminDashboard: 'src/components/AdminDashboard.tsx',
   adminWithdrawReview: 'src/app/api/admin/withdraw/review/route.ts',
+  aiStudioClient: 'src/components/AiStudioClient.tsx',
+  autoBotImport: 'src/components/AutoBotImport.tsx',
+  blogManagerClient: 'src/components/BlogManagerClient.tsx',
+  newsletterAdminClient: 'src/components/NewsletterAdminClient.tsx',
+  translatorPanel: 'src/components/TranslatorPanel.tsx',
+  adminClientAuth: 'src/lib/adminClientAuth.ts',
+  operatorDrafts: 'src/lib/operator/drafts.ts',
+  operatorQualityGate: 'src/lib/operator/qualityGate.ts',
+  operatorDraftsRoute: 'src/app/api/operator/drafts/route.ts',
+  cleanMockRoute: 'src/app/api/clean-mock/route.ts',
+  fixChaptersRoute: 'src/app/api/fix-chapters/route.ts',
+  migrateRoute: 'src/app/api/migrate/route.ts',
+  adminDailyRunRoute: 'src/app/api/admin/daily-run/route.ts',
+  adminDailyRunCronRoute: 'src/app/api/admin/daily-run-cron/route.ts',
+  adminPublishNovelRoute: 'src/app/api/admin/publish-novel/route.ts',
+  adminPublishChapterRoute: 'src/app/api/admin/publish-chapter/route.ts',
+  aiGenerateNovelRoute: 'src/app/api/ai/generate-novel/route.ts',
+  aiGenerateChapterRoute: 'src/app/api/ai/generate-chapter/route.ts',
+  adminTranslateChapterRoute: 'src/app/api/admin/translate-chapter/route.ts',
   firestoreRules: 'firestore.rules',
 };
 
 function read(relativePath) {
   return readFileSync(resolve(rootDir, relativePath), 'utf8').replace(/\r\n/g, '\n');
+}
+
+function readIfExists(relativePath) {
+  const fullPath = resolve(rootDir, relativePath);
+  if (!existsSync(fullPath)) return '';
+  return readFileSync(fullPath, 'utf8').replace(/\r\n/g, '\n');
 }
 
 function includesAll(content, snippets) {
@@ -339,6 +364,144 @@ function checkAdminWithdrawReviewHardened() {
   );
 }
 
+function checkDangerousMaintenanceRoutesRequireAdmin() {
+  const routeSpecs = [
+    ['clean mock', files.cleanMockRoute],
+    ['fix chapters', files.fixChaptersRoute],
+    ['migrate', files.migrateRoute],
+  ];
+
+  return routeSpecs.map(([label, relativePath]) => {
+    const content = read(relativePath);
+    const protectedByAdmin =
+      content.includes("import { authorizeAdmin } from '@/lib/apiAuth'") &&
+      content.includes('const auth = await authorizeAdmin(req)') &&
+      content.includes('if (!auth.ok)') &&
+      !/export async function GET\(\)/.test(content) &&
+      !/x-admin-email/i.test(content);
+
+    return result(
+      `${label} maintenance route requires server admin auth`,
+      protectedByAdmin,
+      `${relativePath} must not expose public GET writes/deletes and must use authorizeAdmin, not x-admin-email`
+    );
+  });
+}
+
+function checkClientNoPublicGeminiKey() {
+  const clientFiles = [
+    files.autoBotImport,
+    files.aiStudioClient,
+    files.blogManagerClient,
+    files.translatorPanel,
+  ];
+  const offenders = clientFiles.filter((file) => read(file).includes('NEXT_PUBLIC_GEMINI_API_KEY'));
+
+  return result(
+    'client components do not reference NEXT_PUBLIC_GEMINI_API_KEY',
+    offenders.length === 0,
+    `Client files must not expose Gemini keys. Offenders: ${offenders.join(', ')}`
+  );
+}
+
+function checkAdminClientsUseFirebaseBearer() {
+  const helper = readIfExists(files.adminClientAuth);
+  const clientFiles = [
+    files.aiStudioClient,
+    files.blogManagerClient,
+    files.newsletterAdminClient,
+    files.translatorPanel,
+  ];
+  const clients = clientFiles.map((file) => read(file)).join('\n');
+  const helperOk =
+    helper.includes('getAdminAuthHeaders') &&
+    helper.includes('auth.currentUser') &&
+    helper.includes('getIdToken()') &&
+    helper.includes('Authorization: `Bearer ${idToken}`');
+
+  return result(
+    'admin clients use Firebase bearer token instead of x-admin-email',
+    helperOk && !/x-admin-email/i.test(clients),
+    'Admin tools must call getAdminAuthHeaders() and must not send spoofable x-admin-email'
+  );
+}
+
+function checkOperatorDraftModuleExists() {
+  const drafts = readIfExists(files.operatorDrafts);
+  const qualityGate = readIfExists(files.operatorQualityGate);
+  const route = readIfExists(files.operatorDraftsRoute);
+  const requiredDrafts = [
+    'createOperatorDraft',
+    "collection('operator_drafts')",
+    "status: qualityReport.blockers.length > 0 ? 'NEEDS_FIX' : 'NEEDS_REVIEW'",
+    'runBasicQualityGate',
+  ];
+  const requiredQuality = [
+    'runBasicQualityGate',
+    'warnings',
+    'blockers',
+    'score',
+    'TODO',
+    'lorem ipsum',
+    'undefined',
+  ];
+  const requiredRoute = [
+    'authorizeAdmin',
+    'createOperatorDraft',
+    "collection('operator_drafts')",
+  ];
+
+  return result(
+    'operator draft module stores AI output as reviewed drafts',
+    includesAll(drafts, requiredDrafts) &&
+      includesAll(qualityGate, requiredQuality) &&
+      includesAll(route, requiredRoute),
+    'Operator drafts need createOperatorDraft(), basic quality gate, and authenticated GET/POST /api/operator/drafts'
+  );
+}
+
+function checkAiRoutesDoNotPublishPublicContent() {
+  const publishingRoutes = [
+    files.adminGenerateBlog,
+    files.adminDailyRunRoute,
+    files.adminDailyRunCronRoute,
+    files.adminTranslateChapterRoute,
+  ];
+  const content = publishingRoutes.map((file) => `${file}\n${read(file)}`).join('\n\n');
+  const forbiddenWrites = [
+    /\.collection\('blog_posts'\)\.doc\([^)]*\)\.set\(/,
+    /\.collection\('novels'\)\.doc\([^)]*\)\.set\(/,
+    /db\.doc\(`novels\/\$\{[^`]+`[\s\S]*?\.set\(/,
+    /batch\.set\(db\.doc\(`novels\/\$\{[^`]+`/,
+  ];
+
+  return result(
+    'AI generation routes create operator drafts instead of public content',
+    content.includes('createOperatorDraft') && excludesAll(content, forbiddenWrites),
+    'AI blog/daily/translation routes must write operator_drafts, not novels/chapters/blog_posts directly'
+  );
+}
+
+function checkAiStudioCreatesDraftsOnly() {
+  const content = read(files.aiStudioClient);
+  const forbidden = [
+    /\/api\/admin\/publish-novel/,
+    /\/api\/admin\/publish-chapter/,
+  ];
+  const required = [
+    '/api/operator/drafts',
+    "type: 'story'",
+    "type: 'chapter'",
+    'Đã tạo draft',
+  ];
+
+  return result(
+    'AI Studio creates story/chapter drafts instead of publishing',
+    includesAll(content, required) && excludesAll(content, forbidden),
+    'AI Studio must post story/chapter drafts to /api/operator/drafts and avoid publish routes'
+  );
+}
+
 const results = [
   checkAdminAuth(),
   ...checkUserSensitiveRoutes(),
@@ -349,6 +512,12 @@ const results = [
   checkDemoRechargeVipDisabled(),
   checkAdminTestCoinDisabled(),
   checkAdminWithdrawReviewHardened(),
+  ...checkDangerousMaintenanceRoutesRequireAdmin(),
+  checkClientNoPublicGeminiKey(),
+  checkAdminClientsUseFirebaseBearer(),
+  checkOperatorDraftModuleExists(),
+  checkAiRoutesDoNotPublishPublicContent(),
+  checkAiStudioCreatesDraftsOnly(),
   checkFirestoreRules(),
 ];
 

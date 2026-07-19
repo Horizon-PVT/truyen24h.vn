@@ -3,11 +3,11 @@
  *
  * Generates a complete novel outline (title, author persona, description,
  * genres, SEO tags, cover prompt). Does NOT write to Firestore — the admin
- * UI / cron job reviews the output first and then calls /api/admin/publish.
+ * UI / cron job reviews the output first and stores it as operator draft.
  *
  * Body: { topic?: string, genres?: string[], toneHints?: string, autoTopic?: boolean }
  *
- * Auth: admin only (x-admin-token or x-admin-email).
+ * Auth: admin only (Firebase bearer token or x-admin-token).
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { authorizeAdmin } from '@/lib/apiAuth';

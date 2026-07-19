@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { auth, loginWithGoogle } from '../firebase';
 import AdminDashboard from './AdminDashboard';
-import { Loader2, ShieldAlert, Sparkles, BarChart3, Library, Wallet, BookOpen } from 'lucide-react';
+import { Loader2, ShieldAlert, Sparkles, BarChart3, Library, Wallet, BookOpen, ClipboardList } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { isAdmin } from '@/lib/admin';
@@ -15,6 +15,13 @@ const CARDS = [
     desc: 'Sinh & đăng truyện AI hằng ngày',
     icon: Sparkles,
     color: 'from-yellow-500 to-orange-500',
+  },
+  {
+    href: '/admin/operator-drafts',
+    label: 'Duyệt Draft AI',
+    desc: 'Duyệt, xuất bản và rollback draft AI',
+    icon: ClipboardList,
+    color: 'from-purple-500 to-indigo-500',
   },
   {
     href: '/admin/revenue',

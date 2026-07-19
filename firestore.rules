@@ -205,6 +205,25 @@ service cloud.firestore {
         && resource.data.userId == request.auth.uid;
     }
 
+    match /operator_drafts/{draftId} {
+      allow read, write: if false;
+      match /{document=**} {
+        allow read, write: if false;
+      }
+    }
+
+    match /operator_reviews/{id} {
+      allow read, write: if false;
+    }
+
+    match /operator_publish_logs/{id} {
+      allow read, write: if false;
+    }
+
+    match /operator_rollback_logs/{id} {
+      allow read, write: if false;
+    }
+
     // Fail closed for every other collection, especially unknown sensitive
     // payment, admin, automation, or revenue paths.
     match /{document=**} {

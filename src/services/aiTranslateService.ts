@@ -14,7 +14,7 @@
  */
 import { GoogleGenAI, Type } from '@google/genai';
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.NEXT_PUBLIC_GEMINI_API_KEY;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const ai = GEMINI_API_KEY ? new GoogleGenAI({ apiKey: GEMINI_API_KEY }) : null;
 const MODEL = 'gemini-2.5-flash';
 

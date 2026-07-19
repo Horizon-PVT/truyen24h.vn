@@ -7,6 +7,7 @@ import { db, handleFirestoreError, OperationType } from '../firebase';
 import { collection, query, orderBy, onSnapshot, doc, getDoc } from 'firebase/firestore';
 import { getAIRecommendations, getNovelSummary } from '../services/geminiService';
 import { useAuth } from '@/contexts/AuthContext';
+import { isPublicItem } from '../lib/visibilityGuard';
 
 type ResumeProgress = {
   lastChapterId?: string;
@@ -168,7 +169,9 @@ export default function NovelDetailView({ novel, onChapterSelect, onNovelSelect,
       try {
         const { getDocs, collection: col, query: q2, limit } = await import('firebase/firestore');
         const snap = await getDocs(q2(col(db, 'novels'), limit(30)));
-        const fetched = snap.docs.map(d => ({ id: d.id, ...d.data() } as Novel));
+        const fetched = snap.docs
+          .map(d => ({ id: d.id, ...d.data() } as Novel))
+          .filter(isPublicItem);
         setLimitedNovels(fetched);
       } catch(e) {
         console.error('novels fetch error:', e);
@@ -183,10 +186,12 @@ export default function NovelDetailView({ novel, onChapterSelect, onNovelSelect,
     const q = query(collection(db, path), orderBy('chapterNumber', 'asc'));
     
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const fetchedChapters = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Chapter[];
+      const fetchedChapters = snapshot.docs
+        .map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        }))
+        .filter(isPublicItem) as Chapter[];
       setDynamicChapters(fetchedChapters);
     }, (error) => {
       console.log('No dynamic chapters found or error:', error.message);
@@ -198,10 +203,12 @@ export default function NovelDetailView({ novel, onChapterSelect, onNovelSelect,
   // Chapters tĩnh từ novel.chapters luôn có sẵn — không block UI
   const allChapters = useMemo(() => {
     const byId = new Map<string, Chapter>();
-    [...(novel.chapters || []), ...dynamicChapters].forEach((chapter) => {
-      const key = chapter.id || `chapter-${chapter.chapterNumber}`;
-      byId.set(key, chapter);
-    });
+    [...(novel.chapters || []), ...dynamicChapters]
+      .filter(isPublicItem)
+      .forEach((chapter) => {
+        const key = chapter.id || `chapter-${chapter.chapterNumber}`;
+        byId.set(key, chapter);
+      });
     return Array.from(byId.values()).sort((a, b) => a.chapterNumber - b.chapterNumber);
   }, [novel.chapters, dynamicChapters]);
 
