@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authorizeAdmin } from '@/lib/apiAuth';
 import { adminDb, FieldValue } from '@/lib/firebaseAdmin';
+import { Transaction } from 'firebase-admin/firestore';
 
 export const runtime = 'nodejs';
 
@@ -44,21 +45,25 @@ export async function POST(req: NextRequest) {
     const adminEmail = auth.email || auth.uid || 'admin';
     const now = FieldValue.serverTimestamp();
 
-    const result = await db.runTransaction(async (transaction: any) => {
+    const result = await db.runTransaction(async (transaction: Transaction) => {
       const draftDoc = await transaction.get(draftRef);
       if (!draftDoc.exists) {
         return { error: 'Draft not found', status: 404 };
       }
 
       const currentStatus = draftDoc.get('status') || 'NEEDS_REVIEW';
-      if (currentStatus === 'PUBLISHED') {
-        return { error: 'Draft is already published and cannot be modified', status: 400 };
-      }
 
+      // 1. Kiểm tra idempotent trước tiên
       if (currentStatus === newStatus) {
         return { ok: true, status: currentStatus, idempotent: true };
       }
 
+      // 2. Chặn trạng thái PUBLISHED
+      if (currentStatus === 'PUBLISHED') {
+        return { error: 'INVALID_STATUS_TRANSITION', status: 409 };
+      }
+
+      // 3. Kiểm tra transition được phép
       const allowed = ALLOWED_TRANSITIONS[currentStatus];
       if (!allowed || !allowed.includes(newStatus)) {
         return { error: 'INVALID_STATUS_TRANSITION', status: 409 };
@@ -87,8 +92,9 @@ export async function POST(req: NextRequest) {
     }
 
     return NextResponse.json(result);
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Approve transaction failed:', error);
-    return NextResponse.json({ error: error.message || 'Internal server error' }, { status: 500 });
+    const message = error instanceof Error ? error.message : 'Internal server error';
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

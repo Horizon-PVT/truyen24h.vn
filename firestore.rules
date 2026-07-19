@@ -114,35 +114,12 @@ service cloud.firestore {
     }
 
     // Operator deny rules
-    match /operator_drafts/{draftId} {
-      allow read, write: if false;
-      match /{document=**} {
-        allow read, write: if false;
-      }
-    }
-
-    match /operator_reviews/{id} {
-      allow read, write: if false;
-    }
-
-    match /operator_publish_logs/{id} {
-      allow read, write: if false;
-    }
-
-    match /operator_rollback_logs/{id} {
-      allow read, write: if false;
-    }
-
-    match /operator_quality_reports/{id} {
-      allow read, write: if false;
-    }
-
-    match /ops_daily_runs/{runId} {
-      allow read, write: if false;
-    }
-
-    match /admin_audit_logs/{id} {
-      allow read, write: if false;
-    }
+    match /operator_drafts/{document=**} { allow read, write: if false; }
+    match /operator_reviews/{document=**} { allow read, write: if false; }
+    match /operator_publish_logs/{document=**} { allow read, write: if false; }
+    match /operator_rollback_logs/{document=**} { allow read, write: if false; }
+    match /operator_quality_reports/{document=**} { allow read, write: if false; }
+    match /ops_daily_runs/{document=**} { allow read, write: if false; }
+    match /admin_audit_logs/{document=**} { allow read, write: if false; }
   }
 }

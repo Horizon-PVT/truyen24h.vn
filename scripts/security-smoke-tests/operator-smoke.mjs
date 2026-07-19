@@ -189,9 +189,21 @@ function checkApproveTransitions() {
     'INVALID_STATUS_TRANSITION',
     '409',
   ];
+
+  const basicCheck = includesAll(content, required);
+
+  const idxIdempotent = content.indexOf('currentStatus === newStatus');
+  const idxPublished = content.indexOf("currentStatus === 'PUBLISHED'");
+  const idxSetLog = content.indexOf('transaction.set(');
+
+  const orderCorrect = idxIdempotent !== -1 && idxPublished !== -1 && idxSetLog !== -1 &&
+                       idxIdempotent < idxSetLog && idxPublished < idxSetLog;
+
+  const passed = basicCheck && orderCorrect;
+
   return result(
     'approve API transition rules are verified',
-    includesAll(content, required),
+    passed,
     'Approve route must perform read inside transaction, block transition from PUBLISHED, support idempotent success when new status matches current status, and enforce ALLOWED_TRANSITIONS matrix returning 409 INVALID_STATUS_TRANSITION'
   );
 }
