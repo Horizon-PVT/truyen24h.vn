@@ -16,6 +16,7 @@ import { db } from '@/firebase';
 import { collection, onSnapshot, orderBy, query, limit, deleteDoc, doc } from 'firebase/firestore';
 import { useAuth } from '@/contexts/AuthContext';
 import { GENRES } from '@/constants';
+import { getAdminAuthHeaders } from '@/lib/adminClientAuth';
 import {
   Sparkles, BookOpen, Loader2, CheckCircle2, AlertCircle, Trash2,
   ExternalLink, ListOrdered, RefreshCw,
@@ -26,13 +27,12 @@ interface BlogRow {
   title: string;
   excerpt?: string;
   kind?: string;
-  createdAt?: any;
+  createdAt?: unknown;
   coverUrl?: string;
 }
 
 export default function BlogManagerClient() {
-  const { user, isAdminUser } = useAuth();
-  const adminEmail = user?.email || '';
+  const { isAdminUser } = useAuth();
 
   const [posts, setPosts] = useState<BlogRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -54,10 +54,11 @@ export default function BlogManagerClient() {
     setTimeout(() => setToast(null), 6000);
   }
 
-  async function callApi(body: any) {
+  async function callApi(body: Record<string, unknown>) {
+    const authHeaders = await getAdminAuthHeaders();
     const r = await fetch('/api/admin/generate-blog-post', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-admin-email': adminEmail },
+      headers: { 'content-type': 'application/json', ...authHeaders },
       body: JSON.stringify(body),
     });
     const data = await r.json();
@@ -69,9 +70,9 @@ export default function BlogManagerClient() {
     setBusy('review');
     try {
       const data = await callApi({ kind: 'review' });
-      flash('ok', `Đã đăng review: ${data.post.title}`);
-    } catch (e: any) {
-      flash('err', e.message);
+      flash('ok', `Da tao draft review, can duyet: ${data.post.title}`);
+    } catch (e: unknown) {
+      flash('err', getErrorMessage(e));
     } finally {
       setBusy(null);
     }
@@ -81,9 +82,9 @@ export default function BlogManagerClient() {
     setBusy('list');
     try {
       const data = await callApi({ kind: 'listicle', genre: listGenre, count: 10 });
-      flash('ok', `Đã đăng listicle: ${data.post.title}`);
-    } catch (e: any) {
-      flash('err', e.message);
+      flash('ok', `Da tao draft listicle, can duyet: ${data.post.title}`);
+    } catch (e: unknown) {
+      flash('err', getErrorMessage(e));
     } finally {
       setBusy(null);
     }
@@ -109,7 +110,7 @@ export default function BlogManagerClient() {
         <h1 className="text-3xl font-black flex items-center gap-3">
           <BookOpen className="text-primary" /> Blog Manager
         </h1>
-        <p className="text-muted text-sm mt-1">Sinh review & listicle bằng AI rồi đăng thẳng /blog.</p>
+        <p className="text-muted text-sm mt-1">Sinh review & listicle bang AI vao draft, can duyet truoc khi publish.</p>
       </div>
 
       {toast && (
@@ -134,7 +135,7 @@ export default function BlogManagerClient() {
             className="w-full px-5 py-3 bg-primary text-white rounded-xl font-bold flex items-center justify-center gap-2 disabled:opacity-50"
           >
             {busy === 'review' ? <Loader2 className="animate-spin size-4" /> : <Sparkles className="size-4" />}
-            Sinh & đăng review
+            Sinh draft review
           </button>
         </section>
 
@@ -142,7 +143,7 @@ export default function BlogManagerClient() {
           <h2 className="font-bold mb-2 flex items-center gap-2">
             <ListOrdered className="size-4 text-blue-500" /> Listicle theo thể loại
           </h2>
-          <p className="text-xs text-muted mb-4">"Top 10 truyện {listGenre.toLowerCase()} hay nhất tháng này".</p>
+          <p className="text-xs text-muted mb-4">Top 10 truyen {listGenre.toLowerCase()} hay nhat thang nay.</p>
           <div className="flex gap-2">
             <select
               value={listGenre}
@@ -217,4 +218,8 @@ export default function BlogManagerClient() {
       </div>
     </div>
   );
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : 'Lỗi không xác định';
 }

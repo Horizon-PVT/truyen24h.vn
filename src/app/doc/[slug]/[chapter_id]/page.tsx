@@ -11,29 +11,54 @@ import { absoluteUrl, SITE_NAME } from '@/lib/site';
 import { ChapterJsonLd } from '@/components/JsonLd';
 import { adminDb } from '@/lib/firebaseAdmin';
 import { serializeFirestore } from '@/lib/serialize';
+import { isPublicItem } from '@/lib/visibilityGuard';
+import type { DocumentData, QueryDocumentSnapshot } from 'firebase-admin/firestore';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 60;
+
+type SerializedNovel = Record<string, unknown> & {
+  id: string;
+  title?: string;
+  coverUrl?: string;
+};
+
+type SerializedChapter = Record<string, unknown> & {
+  id: string;
+  title?: string;
+  chapterNumber?: number;
+};
+
+type FetchResult = {
+  novel: SerializedNovel;
+  chapter: SerializedChapter | null;
+};
 
 async function fetchNovelAndChapter(slug: string, chapterId: string) {
   const db = adminDb();
   const novelSnap = await db.collection('novels').doc(slug).get();
   if (!novelSnap.exists) return null;
+  const novelData = novelSnap.data();
+  if (!isPublicItem(novelData)) return null;
 
   const chapterSnap = await db.doc(`novels/${slug}/chapters/${chapterId}`).get();
-  if (!chapterSnap.exists) return { novel: novelSnap, chapter: null };
+  if (!chapterSnap.exists) return { novel: serializeFirestore({ id: novelSnap.id, ...novelData }) as SerializedNovel, chapter: null };
+  const chapterData = chapterSnap.data();
+  if (!isPublicItem(chapterData)) return null;
 
   // Sibling chapters for the in-reader chapter list.
   const chaptersSnap = await db
     .collection(`novels/${slug}/chapters`)
     .orderBy('chapterNumber', 'asc')
     .get();
-  const chaptersData = chaptersSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  const chaptersData = chaptersSnap.docs
+    .map((d: QueryDocumentSnapshot<DocumentData>) => ({ id: d.id, ...d.data() }))
+    .filter(isPublicItem);
 
   return {
-    novel: serializeFirestore({ id: novelSnap.id, ...novelSnap.data(), chapters: chaptersData }) as any,
-    chapter: serializeFirestore({ id: chapterSnap.id, ...chapterSnap.data() }) as any,
-  };
+    novel: serializeFirestore({ id: novelSnap.id, ...novelData, chapters: chaptersData }) as SerializedNovel,
+    chapter: serializeFirestore({ id: chapterSnap.id, ...chapterData }) as SerializedChapter,
+  } satisfies FetchResult;
 }
 
 export async function generateMetadata({ params }: { params: Promise<{ slug: string, chapter_id: string }> }) {
@@ -41,7 +66,7 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
   const result = await fetchNovelAndChapter(slug, chapter_id);
   if (!result || !result.chapter) return { title: 'Đọc truyện' };
 
-  const { novel, chapter } = result as any;
+  const { novel, chapter } = result;
   const coverUrl = novel.coverUrl || `https://picsum.photos/seed/novel-${slug}/400/600`;
   const pageTitle = `Chương ${chapter.chapterNumber}: ${chapter.title} - ${novel.title}`;
   const pageDesc = `Đọc Chương ${chapter.chapterNumber} của bộ truyện ${novel.title} trên Truyen24h.`;
@@ -77,7 +102,7 @@ export default async function ChapterPage({ params }: { params: Promise<{ slug: 
     return <div className="p-20 text-center text-white">Chương nội dung không tồn tại hoặc đã phân quyền.</div>;
   }
 
-  const { novel, chapter } = result as any;
+  const { novel, chapter } = result;
   return (
     <>
       <ChapterJsonLd novel={novel} chapter={chapter} />

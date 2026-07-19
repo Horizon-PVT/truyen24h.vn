@@ -5,13 +5,13 @@
  * novel metadata, write chapters that hook readers, and produce SEO-friendly
  * summaries. Designed to run on Vercel server routes (Node runtime).
  *
- * All functions return safe fallbacks if NEXT_PUBLIC_GEMINI_API_KEY is missing
+ * All functions require server-side GEMINI_API_KEY.
  * so the rest of the site keeps working during the credential-setup window.
  */
 import { GoogleGenAI, Type } from '@google/genai';
 import { GENRES } from '../constants';
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.NEXT_PUBLIC_GEMINI_API_KEY;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const ai = GEMINI_API_KEY ? new GoogleGenAI({ apiKey: GEMINI_API_KEY }) : null;
 
 const MODEL = 'gemini-2.5-flash';
