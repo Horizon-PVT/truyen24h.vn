@@ -28,7 +28,7 @@ export async function POST(req: NextRequest) {
     const progressRef = db.doc(`users/${uid}/daily_missions/${date}/progress/${missionId}`);
     const userRef = db.doc(`users/${uid}`);
 
-    const result = await db.runTransaction(async (tx: any) => {
+    const result = await db.runTransaction(async (tx) => {
       const snap = await tx.get(progressRef);
       if (!snap.exists) return { error: 'Mission not started yet' };
       const data = snap.data() as any;

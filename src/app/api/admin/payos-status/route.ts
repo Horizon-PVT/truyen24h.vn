@@ -48,7 +48,7 @@ export async function GET(req: Request) {
     });
   }
 
-  const orders = snap.docs.map((d: any) => {
+  const orders = snap.docs.map((d) => {
     const data = d.data() as any;
     return {
       orderCode: d.id,

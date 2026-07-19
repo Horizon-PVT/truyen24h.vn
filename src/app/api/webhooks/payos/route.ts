@@ -79,7 +79,7 @@ export async function POST(request: Request) {
 
     // 3) Credit the user. Use a transaction so we never race against
     //    another path that mutates the same user doc.
-    await db.runTransaction(async (tx: any) => {
+    await db.runTransaction(async (tx) => {
       const userRef = db.collection('users').doc(orderData.uid);
       const userSnap = await tx.get(userRef);
 

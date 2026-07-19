@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
     const userRef = db.collection('users').doc(uid);
     const reqRef = db.collection('withdraw_requests').doc();
 
-    const result = await db.runTransaction(async (tx: any) => {
+    const result = await db.runTransaction(async (tx) => {
       const snap = await tx.get(userRef);
       if (!snap.exists) throw new Error('User not found');
       const data = snap.data() as any;
