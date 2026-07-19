@@ -183,11 +183,16 @@ function checkApproveTransitions() {
     "currentStatus === 'PUBLISHED'",
     'currentStatus === newStatus',
     'idempotent: true',
+    'ALLOWED_TRANSITIONS',
+    'NEEDS_REVIEW',
+    'NEEDS_FIX',
+    'INVALID_STATUS_TRANSITION',
+    '409',
   ];
   return result(
     'approve API transition rules are verified',
     includesAll(content, required),
-    'Approve route must perform read inside transaction, block transition from PUBLISHED, and support idempotent success when new status matches current status'
+    'Approve route must perform read inside transaction, block transition from PUBLISHED, support idempotent success when new status matches current status, and enforce ALLOWED_TRANSITIONS matrix returning 409 INVALID_STATUS_TRANSITION'
   );
 }
 

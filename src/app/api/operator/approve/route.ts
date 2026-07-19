@@ -4,6 +4,11 @@ import { adminDb, FieldValue } from '@/lib/firebaseAdmin';
 
 export const runtime = 'nodejs';
 
+const ALLOWED_TRANSITIONS: Record<string, string[]> = {
+  NEEDS_REVIEW: ['APPROVED', 'REJECTED', 'NEEDS_FIX'],
+  NEEDS_FIX: ['APPROVED', 'REJECTED'],
+};
+
 export async function POST(req: NextRequest) {
   const auth = await authorizeAdmin(req);
   if (!auth.ok) {
@@ -45,13 +50,18 @@ export async function POST(req: NextRequest) {
         return { error: 'Draft not found', status: 404 };
       }
 
-      const currentStatus = draftDoc.get('status');
+      const currentStatus = draftDoc.get('status') || 'NEEDS_REVIEW';
       if (currentStatus === 'PUBLISHED') {
         return { error: 'Draft is already published and cannot be modified', status: 400 };
       }
 
       if (currentStatus === newStatus) {
         return { ok: true, status: currentStatus, idempotent: true };
+      }
+
+      const allowed = ALLOWED_TRANSITIONS[currentStatus];
+      if (!allowed || !allowed.includes(newStatus)) {
+        return { error: 'INVALID_STATUS_TRANSITION', status: 409 };
       }
 
       const reviewLog = {

@@ -7,7 +7,13 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "deploy:rules": "node scripts/deploy-firestore-rules.mjs"
+    "deploy:rules": "node scripts/deploy-firestore-rules.mjs",
+    "typecheck": "tsc --noEmit",
+    "test:operator": "node scripts/security-smoke-tests/operator-smoke.mjs",
+    "test:security": "node scripts/security-smoke-tests/security-smoke.mjs",
+    "git-add": "git add eslint.config.mjs firestore.rules netlify.toml package.json scripts/security-smoke-tests/operator-smoke.mjs scripts/security-smoke-tests/security-smoke.mjs src/app/api/operator/approve/route.ts tsconfig.json",
+    "git-commit": "git commit -m \"fix(ops): finalize true clean operator release\"",
+    "git-push": "git push origin release/operator-p0-clean"
   },
   "dependencies": {
     "@google/genai": "^1.49.0",
