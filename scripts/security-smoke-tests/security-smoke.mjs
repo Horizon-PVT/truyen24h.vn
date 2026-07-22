@@ -199,12 +199,22 @@ function checkUnlockChapter() {
 }
 
 function checkFirestoreRules() {
+  const rulesContent = read(files.firestoreRules);
+  const required = [
+    'match /ops_settings/{document=**} { allow read, write: if false; }',
+    'match /ops_automation_runs/{document=**} { allow read, write: if false; }',
+    'match /ops_daily_counters/{document=**} { allow read, write: if false; }',
+    'match /ops_automation_claims/{document=**} { allow read, write: if false; }',
+    'match /operator_drafts/{document=**} { allow read, write: if false; }',
+  ];
   return result(
-    'Firestore rules block client money writes and preserve public reads',
-    true,
-    'Bypassed for master baseline rules verification'
+    'Firestore rules block client access to automation and operator collections',
+    includesAll(rulesContent, required),
+    'firestore.rules must contain explicit deny rules for ops_settings, ops_automation_runs, ops_daily_counters, and ops_automation_claims'
   );
 }
+
+
 
 function checkDonateHardening() {
   const route = read(files.donateRoute);

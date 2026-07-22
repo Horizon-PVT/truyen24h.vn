@@ -10,7 +10,8 @@
     "deploy:rules": "node scripts/deploy-firestore-rules.mjs",
     "typecheck": "tsc --noEmit",
     "test:operator": "node scripts/security-smoke-tests/operator-smoke.mjs",
-    "test:security": "node scripts/security-smoke-tests/security-smoke.mjs"
+    "test:security": "node scripts/security-smoke-tests/security-smoke.mjs",
+    "test:automation": "npx tsx scripts/automation-tests/automation-foundation-tests.ts"
   },
   "dependencies": {
     "@google/genai": "^1.49.0",

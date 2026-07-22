@@ -121,5 +121,11 @@ service cloud.firestore {
     match /operator_quality_reports/{document=**} { allow read, write: if false; }
     match /ops_daily_runs/{document=**} { allow read, write: if false; }
     match /admin_audit_logs/{document=**} { allow read, write: if false; }
+    match /ops_settings/{document=**} { allow read, write: if false; }
+    match /ops_automation_runs/{document=**} { allow read, write: if false; }
+    match /ops_daily_counters/{document=**} { allow read, write: if false; }
+    match /ops_automation_claims/{document=**} { allow read, write: if false; }
   }
 }
+
+
