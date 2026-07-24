@@ -392,7 +392,9 @@ export async function executeAutomationRun(
       
       // Recovery Policy Implementation
       if ((currentStage as string) === 'FENCING_FAILED' || errorMessage.includes('LOST_CLAIM_OWNERSHIP')) {
-        // DO NOT release slot or claim (belongs to new owner).
+        // DO NOT release claim (belongs to new owner).
+        // Hướng B: release daily cap slot cho runIdA
+        await releaseDailyCapSlot(db, dateKey, pipeline, runId);
         finalErrorCode = 'AUTOMATION_LOST_CLAIM_OWNERSHIP';
       } else if (currentStage === 'PRE_PROVIDER' || errorMessage.includes('PRE_PROVIDER_NO_NOVEL')) {
         await releaseDailyCapSlot(db, dateKey, pipeline, runId);

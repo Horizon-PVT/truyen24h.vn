@@ -455,12 +455,27 @@ async function testRecoveryPoliciesAndDeduplication() {
   
   let providerACalled = false;
   let providerBCalled = false;
+  let totalAfterBReserve = 0;
+
   const genA = async () => { providerACalled = true; return { title: 'A', content: 'A', summary: 'A' }; };
-  const genB = async () => { providerBCalled = true; return { title: 'B', content: 'B', summary: 'B' }; };
+  const genB = async () => {
+    providerBCalled = true;
+    // Checkpoint 3: sau B reserve/reclaim
+    const counterSnap = await db.collection('ops_daily_counters').doc(dateKey).get();
+    totalAfterBReserve = counterSnap.data()?.totalDrafts || 0;
+    console.log(`[Checkpoint 3] Sau B reserve: totalDrafts = ${totalAfterBReserve}`);
+    return { title: 'B', content: 'B', summary: 'B' };
+  };
+
+  // Checkpoint 1: trước A
+  const counterBeforeA = await db.collection('ops_daily_counters').doc(dateKey).get();
+  const totalBeforeA = counterBeforeA.data()?.totalDrafts || 0;
+  console.log(`[Checkpoint 1] Trước A: totalDrafts = ${totalBeforeA}`);
 
   // Intercept ops_automation_runs set for Worker A to pause right after PRE_PROVIDER creation
   const origColl = db.collection.bind(db);
   let isWorkerA = true;
+  let runIdA = '';
   db.collection = (name: string) => {
     if (name === 'ops_automation_runs' && isWorkerA) {
       isWorkerA = false; // Next calls (from B) won't pause
@@ -469,9 +484,11 @@ async function testRecoveryPoliciesAndDeduplication() {
         ...origRef,
         doc: (id?: string) => {
           const docRef = origRef.doc(id);
+          if (id) runIdA = id;
           const origSet = docRef.set.bind(docRef);
           docRef.set = async (data: any, opts?: any) => {
             const res = await origSet(data, opts);
+            if (!runIdA) runIdA = docRef.id;
             workerAPaused = true;
             await workerAPromisePause;
             return res;
@@ -489,6 +506,11 @@ async function testRecoveryPoliciesAndDeduplication() {
   // Wait until Worker A is paused (it has claimed PRE_PROVIDER and reserved cap)
   while (!workerAPaused) { await new Promise(r => setTimeout(r, 10)); }
   
+  // Checkpoint 2: sau A reserve
+  const counterAfterA = await origColl('ops_daily_counters').doc(dateKey).get();
+  const totalAfterA = counterAfterA.data()?.totalDrafts || 0;
+  console.log(`[Checkpoint 2] Sau A reserve: totalDrafts = ${totalAfterA}`);
+
   // Now Worker A is paused at PRE_PROVIDER.
   // We artificially expire Claim A.
   const claimSnapRef = origColl('ops_automation_claims').doc(raceIdemKey);
@@ -502,10 +524,18 @@ async function testRecoveryPoliciesAndDeduplication() {
   assert.equal(reqB.ok, true, 'Worker B must succeed');
   assert.equal(providerBCalled, true, 'Only B can call Provider');
   
-  // Capture counter state after B completes
+  // Checkpoint 4: sau B hoàn tất
   const counterSnapAfterB = await origColl('ops_daily_counters').doc(dateKey).get();
   const totalAfterB = counterSnapAfterB.data()?.totalDrafts;
   const blogAfterB = counterSnapAfterB.data()?.blogDrafts;
+  console.log(`[Checkpoint 4] Sau B hoàn tất: totalDrafts = ${totalAfterB}`);
+
+  const finalClaimBeforeA = await origColl('ops_automation_claims').doc(raceIdemKey).get();
+  const runIdB = (reqB as any).runId || finalClaimBeforeA.data()?.runId;
+
+  // Checkpoint 4.5: Capture B reservation before A resumes
+  const resBSnapBeforeAResume = await origColl('ops_daily_reservations').doc(runIdB).get();
+  const resBDataBefore = resBSnapBeforeAResume.data();
 
   // Now resume Worker A. It should hit the STALE-OWNER FENCING transaction and fail.
   workerAResume();
@@ -515,26 +545,77 @@ async function testRecoveryPoliciesAndDeduplication() {
   if (!resA.ok) assert.equal(resA.errorCode, 'AUTOMATION_LOST_CLAIM_OWNERSHIP');
   assert.equal(providerACalled, false, 'Worker A provider call count must be 0');
   
+  // Checkpoint 5: sau A bị fenced
+  const counterSnapAfterAFenced = await origColl('ops_daily_counters').doc(dateKey).get();
+  const totalAfterAFenced = counterSnapAfterAFenced.data()?.totalDrafts || 0;
+  const blogAfterAFenced = counterSnapAfterAFenced.data()?.blogDrafts || 0;
+  const storyAfterAFenced = counterSnapAfterAFenced.data()?.storyDrafts || 0;
+  console.log(`[Checkpoint 5] Sau A bị fenced: totalDrafts = ${totalAfterAFenced}`);
+
   // Verify Worker B's claim is untouched by Worker A
   const finalClaim = await origColl('ops_automation_claims').doc(raceIdemKey).get();
   assert.equal(finalClaim.exists, true, 'Claim must exist');
-  assert.equal(finalClaim.data()?.runId, (reqB as any).runId, 'Claim must belong to Worker B');
+  assert.equal(finalClaim.data()?.runId, runIdB, 'Claim must belong to Worker B');
   assert.equal(finalClaim.data()?.status, 'COMPLETED', 'Claim status must remain COMPLETED by Worker B');
 
-  // Verify daily counter is unchanged by Worker A
-  const counterSnapAfterA = await origColl('ops_daily_counters').doc(dateKey).get();
-  assert.equal(counterSnapAfterA.data()?.totalDrafts, totalAfterB, 'Daily total counter after A resume must match exact value after B completion');
-  assert.equal(counterSnapAfterA.data()?.blogDrafts, blogAfterB, 'Daily blog counter after A resume must match exact value after B completion');
+  // Verify daily counter is DECREASED by Worker A (because Worker A released its slot)
+  assert.equal(totalAfterAFenced, totalAfterB - 1, 'Daily total counter after A resume must DECREASE by exactly one (A releases its slot)');
+  assert.equal(blogAfterAFenced, blogAfterB - 1, 'Daily blog counter after A resume must DECREASE by exactly one');
 
-  // Verify releaseDailyCapSlot owner fencing: attempt releasing B's slot using wrong runId (Worker A's runId)
+  // Verify invariant: totalDrafts === number of reservations being counted
+  const allReservations = await origColl('ops_daily_reservations').get();
+  let countedReservations = 0;
+  let blogReservations = 0;
+  let storyReservations = 0;
+  let resAState = '';
+  let resBState = '';
+
+  for (const doc of allReservations.docs) {
+    const data = doc.data();
+    if (doc.id === runIdA) resAState = data.status;
+    if (doc.id === runIdB) resBState = data.status;
+
+    if (data.dateKey === dateKey && data.status === 'RESERVED') {
+      countedReservations++;
+      if (data.pipeline === 'blog') blogReservations++;
+      if (data.pipeline === 'story') storyReservations++;
+    }
+  }
+
+  console.log(`[Invariant] totalDrafts (${totalAfterAFenced}) === reservations (${countedReservations})`);
+  console.log(`[Invariant] blogDrafts (${blogAfterAFenced}) === blog reservations (${blogReservations})`);
+  console.log(`[Invariant] storyDrafts (${storyAfterAFenced}) === story reservations (${storyReservations})`);
+
+  assert.equal(totalAfterAFenced, countedReservations, 'totalDrafts must equal number of RESERVED reservations');
+  assert.equal(blogAfterAFenced, blogReservations, 'blogDrafts must equal number of RESERVED blog reservations');
+  assert.equal(storyAfterAFenced, storyReservations, 'storyDrafts must equal number of RESERVED story reservations');
+  assert.equal(resAState, 'RELEASED', 'Reservation A must be RELEASED');
+  assert.equal(resBState, 'RESERVED', 'Reservation B must remain RESERVED');
+
+  const resBSnapAfterAResume = await origColl('ops_daily_reservations').doc(runIdB).get();
+  const resBDataAfter = resBSnapAfterAResume.data();
+  assert.deepEqual(
+    { runId: runIdB, pipeline: resBDataAfter?.pipeline, dateKey: resBDataAfter?.dateKey, status: resBDataAfter?.status },
+    { runId: runIdB, pipeline: resBDataBefore?.pipeline, dateKey: resBDataBefore?.dateKey, status: resBDataBefore?.status },
+    'Reservation B must retain runId, pipeline, dateKey, and status'
+  );
+
+  // Next request can still run if cap has room
+  const nextReq = await executeAutomationRun(db, { pipeline: 'blog', topic: 'Next Topic', requestedBy: 'adminC', generatorOverride: async () => ({ title: 'C', content: 'C', summary: 'C' }) });
+  assert.equal(nextReq.ok, true, 'Next request must succeed if cap has room');
+
+  const counterSnapAfterNextReq = await origColl('ops_daily_counters').doc(dateKey).get();
+  const totalAfterNextReq = counterSnapAfterNextReq.data()?.totalDrafts;
+
+  // Verify releaseDailyCapSlot owner fencing: try calling it again with runIdA (which is now RELEASED). It should do nothing.
   const { releaseDailyCapSlot } = await import('../../src/lib/automation/dailyCap');
-  await releaseDailyCapSlot(db, dateKey, 'blog', 'wrong_run_id_A');
+  await releaseDailyCapSlot(db, dateKey, 'blog', runIdA);
   const counterSnapAfterMismatchedRelease = await origColl('ops_daily_counters').doc(dateKey).get();
-  assert.equal(counterSnapAfterMismatchedRelease.data()?.totalDrafts, totalAfterB, 'Release slot with mismatched runId must NOT decrease daily counter');
+  assert.equal(counterSnapAfterMismatchedRelease.data()?.totalDrafts, totalAfterNextReq, 'Release slot with already released runId must NOT decrease daily counter');
 
   // Restore DB
   db.collection = origColl;
-  console.log('  ✔ Stale-owner fencing controlled race & Daily Cap ownership assertions PASSED');
+  console.log('  ✔ stale-owner own-reservation release; idempotent double-release; B reservation isolation PASSED');
 }
 
 async function testDeduplicationAndCaps() {
