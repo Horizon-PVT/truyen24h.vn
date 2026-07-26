@@ -121,7 +121,7 @@ export async function getAndValidateGlobalSettings(
         reason: `Cấu hình pipeline "${pipeline}" không hợp lệ. enabled phải là boolean.`,
       };
     }
-    
+
     if (pipeConfig.enabled !== true) {
       return {
         ok: false,

@@ -127,5 +127,3 @@ service cloud.firestore {
     match /ops_automation_claims/{document=**} { allow read, write: if false; }
   }
 }
-
-
