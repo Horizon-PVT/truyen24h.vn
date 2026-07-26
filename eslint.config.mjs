@@ -21,6 +21,37 @@ const eslintConfig = defineConfig([
     }
   },
   // Override default ignores of eslint-config-next.
+  {
+    files: ["**/*.ts", "**/*.tsx", "**/*.js", "**/*.mjs"],
+    rules: {
+      "no-restricted-imports": ["error", {
+        patterns: [{
+          group: ["**/automationCore", "**/automationCore.ts", "@/lib/automation/automationCore", ".*automationCore.*"],
+          message: "automationCore is restricted to strictly permitted wrappers only."
+        }]
+      }],
+      "no-restricted-syntax": ["error",
+        {
+          "selector": "CallExpression[callee.name='require'][arguments.0.value=/.*automationCore.*/]",
+          "message": "automationCore is restricted to strictly permitted wrappers only."
+        },
+        {
+          "selector": "ImportExpression[source.value=/.*automationCore.*/]",
+          "message": "automationCore is restricted to strictly permitted wrappers only."
+        }
+      ]
+    }
+  },
+  {
+    files: [
+      "src/lib/automation/runService.ts",
+      "src/lib/automation/dedup.ts",
+      "scripts/automation-tests/support/testAutomationFactory.ts"
+    ],
+    rules: {
+      "no-restricted-imports": "off"
+    }
+  },
   globalIgnores([
     // Default ignores of eslint-config-next:
     ".next/**",

@@ -1,6 +1,8 @@
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { Firestore } from 'firebase-admin/firestore';
 import { FieldValue } from '@/lib/firebaseAdmin';
+
+
 
 export function normalizeVietnameseText(text: string): string {
   if (!text) return '';
@@ -21,54 +23,21 @@ export function generateIdempotencyKey(pipeline: string, topicNormalized: string
   return createHash('sha256').update(`v1:${pipeline}:${topicNormalized}:${dateKey}`).digest('hex');
 }
 
+import { claimIdempotencyKeyAtomicCore } from './automationCore';
+
 export async function claimIdempotencyKeyAtomic(
-  db: Firestore, 
+  db: Firestore,
   idempotencyKey: string,
-  runId: string,
+  newRunId: string,
   topicNormalized: string
-): Promise<{ claimed: boolean; errorCode?: string; existingRunId?: string }> {
-  const claimRef = db.collection('ops_automation_claims').doc(idempotencyKey);
-  try {
-    await db.runTransaction(async (transaction) => {
-      const doc = await transaction.get(claimRef);
-      if (doc.exists) {
-        const data = doc.data();
-        const now = Date.now();
-        // Policy A: Only PRE_PROVIDER stale claims can be reclaimed safely
-        const isStale = data?.status === 'PRE_PROVIDER' && typeof data?.expiresAt === 'number' && data.expiresAt < now;
-        
-        if (!isStale) {
-          throw new Error(`CLAIM_EXISTS:${data?.runId}`);
-        }
-      }
-      
-      const expiresAt = Date.now() + 15 * 60 * 1000; // 15 minutes TTL for claim expiration
-      
-      transaction.set(claimRef, {
-        idempotencyKey,
-        runId,
-        topicNormalized,
-        status: 'PRE_PROVIDER',
-        claimedAt: FieldValue.serverTimestamp(),
-        updatedAt: FieldValue.serverTimestamp(),
-        expiresAt, // numeric timestamp for simple stale check
-        draftId: null,
-      });
-    });
-    return { claimed: true };
-  } catch (error: any) {
-    const msg = error.message || '';
-    if (msg.startsWith('CLAIM_EXISTS:')) {
-      return { claimed: false, errorCode: 'AUTOMATION_DUPLICATE_REQUEST', existingRunId: msg.split(':')[1] };
-    }
-    return { claimed: false, errorCode: 'AUTOMATION_INTERNAL_ERROR' };
-  }
+) {
+  return claimIdempotencyKeyAtomicCore(db, idempotencyKey, newRunId, topicNormalized, () => Date.now());
 }
 
 export async function releaseClaimSafelyWithOwnerCheck(
   db: Firestore,
   idempotencyKey: string,
-  currentRunId: string
+  ownerToken: string
 ): Promise<void> {
   const claimRef = db.collection('ops_automation_claims').doc(idempotencyKey);
   try {
@@ -76,7 +45,7 @@ export async function releaseClaimSafelyWithOwnerCheck(
       const doc = await transaction.get(claimRef);
       if (doc.exists) {
         const data = doc.data();
-        if (data && data.runId === currentRunId) {
+        if (data && data.ownerToken === ownerToken) {
           transaction.delete(claimRef);
         }
       }
@@ -87,8 +56,8 @@ export async function releaseClaimSafelyWithOwnerCheck(
 }
 
 export async function checkExactDuplicate(
-  db: Firestore, 
-  pipeline: 'blog' | 'story', 
+  db: Firestore,
+  pipeline: 'blog' | 'story',
   topic: string,
   idempotencyKey: string,
   fingerprint: string
@@ -116,7 +85,7 @@ export async function checkExactDuplicate(
     .orderBy('updatedAt', 'desc')
     .limit(20)
     .get();
-    
+
   for (const doc of publicSnap.docs) {
     const data = doc.data();
     if (data.title && normalizeVietnameseText(data.title) === normalized) {

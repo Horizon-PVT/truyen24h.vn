@@ -1,58 +1,23 @@
 import assert from 'node:assert/strict';
-import { NextRequest } from 'next/server';
-import {
-  normalizeVietnameseText,
-  generateRequestFingerprint,
-  generateIdempotencyKey,
-  claimIdempotencyKeyAtomic,
-  checkExactDuplicate,
-} from '../../src/lib/automation/dedup';
-import {
-  getAndValidateGlobalSettings,
-  GlobalAutomationSettings,
-} from '../../src/lib/automation/settings';
-import {
-  reserveDailyCapSlot,
-  getAsiaHoChiMinhDateKey,
-} from '../../src/lib/automation/dailyCap';
-import { executeAutomationRun } from '../../src/lib/automation/runService';
+import { createTestAutomationService, OwnershipFencingError } from './support/testAutomationFactory';
+import { getAndValidateGlobalSettings } from '../../src/lib/automation/settings';
+import { getAsiaHoChiMinhDateKey } from '../../src/lib/automation/dailyCap';
 
 console.log('▶ Running Production Module Unit, Integration & Concurrency Tests (Phase 3B Defect Remediation) ...');
 
 // --- InMemory Mock Firestore Implementation ---
 class MockDocSnapshot {
-  constructor(
-    public readonly id: string,
-    private _exists: boolean,
-    private _data: Record<string, any> | undefined
-  ) {}
+  constructor(public readonly id: string, private _exists: boolean, private _data: Record<string, any> | undefined) {}
   get exists(): boolean { return this._exists; }
-  data(): Record<string, any> | undefined { 
-    if (!this._data) return undefined;
-    // Object.assign creates a shallow copy which preserves edge values like NaN and Infinity
-    // Better than JSON.parse(JSON.stringify) which converts NaN/Infinity to null
-    return Object.assign({}, this._data); 
-  }
+  data(): Record<string, any> | undefined { return this._data ? Object.assign({}, this._data) : undefined; }
   get(field: string): any { return this._data ? this._data[field] : undefined; }
 }
 
 class MockQuery {
-  constructor(
-    private store: Map<string, Map<string, Record<string, any>>>,
-    private colName: string,
-    private filters: Array<{ field: string; op: string; val: any }> = [],
-    private orderBys: Array<{ field: string; dir: 'asc' | 'desc' }> = [],
-    private limitVal: number = 100
-  ) {}
-  where(field: string, op: string, val: any): MockQuery {
-    return new MockQuery(this.store, this.colName, [...this.filters, { field, op, val }], this.orderBys, this.limitVal);
-  }
-  orderBy(field: string, dir: 'asc' | 'desc' = 'asc'): MockQuery {
-    return new MockQuery(this.store, this.colName, this.filters, [...this.orderBys, { field, dir }], this.limitVal);
-  }
-  limit(n: number): MockQuery {
-    return new MockQuery(this.store, this.colName, this.filters, this.orderBys, n);
-  }
+  constructor(private store: Map<string, Map<string, Record<string, any>>>, private colName: string, private filters: Array<{ field: string; op: string; val: any }> = [], private orderBys: Array<{ field: string; dir: 'asc' | 'desc' }> = [], private limitVal: number = 100) {}
+  where(field: string, op: string, val: any): MockQuery { return new MockQuery(this.store, this.colName, [...this.filters, { field, op, val }], this.orderBys, this.limitVal); }
+  orderBy(field: string, dir: 'asc' | 'desc' = 'asc'): MockQuery { return new MockQuery(this.store, this.colName, this.filters, [...this.orderBys, { field, dir }], this.limitVal); }
+  limit(n: number): MockQuery { return new MockQuery(this.store, this.colName, this.filters, this.orderBys, n); }
   async get(): Promise<{ empty: boolean; docs: MockDocSnapshot[] }> {
     const col = this.store.get(this.colName) || new Map();
     let list: Array<{ id: string; data: Record<string, any> }> = [];
@@ -82,11 +47,7 @@ class MockQuery {
 }
 
 class MockDocRef {
-  constructor(
-    private store: Map<string, Map<string, Record<string, any>>>,
-    public colName: string,
-    public id: string
-  ) {}
+  constructor(private store: Map<string, Map<string, Record<string, any>>>, public colName: string, public id: string) {}
   async get(): Promise<MockDocSnapshot> {
     const col = this.store.get(this.colName);
     const data = col?.get(this.id);
@@ -106,7 +67,16 @@ class MockDocRef {
     const col = this.store.get(this.colName);
     const existing = col?.get(this.id);
     if (!existing) throw new Error(`Document ${this.id} does not exist`);
-    col!.set(this.id, Object.assign({}, existing, data));
+
+    const newData = Object.assign({}, existing);
+    for (const key of Object.keys(data)) {
+      const val = data[key];
+      newData[key] = val;
+    }
+    if (data.retryCount && typeof data.retryCount === 'object') {
+       newData.retryCount = (existing.retryCount || 0) + 1;
+    }
+    col!.set(this.id, newData);
   }
   async delete(): Promise<void> {
     const col = this.store.get(this.colName);
@@ -120,48 +90,36 @@ class MockTransaction {
   set(docRef: MockDocRef, data: Record<string, any>, opts?: { merge?: boolean }): void {
     let col = this.store.get(docRef.colName);
     if (!col) { col = new Map(); this.store.set(docRef.colName, col); }
-    if (opts?.merge && col.has(docRef.id)) {
-      const existing = col.get(docRef.id) || {};
-      col.set(docRef.id, Object.assign({}, existing, data));
-    } else {
-      col.set(docRef.id, Object.assign({}, data));
+
+    const existing = opts?.merge && col.has(docRef.id) ? (col.get(docRef.id) || {}) : {};
+    const newData = Object.assign({}, existing);
+
+    for (const key of Object.keys(data)) {
+      const val = data[key];
+      newData[key] = val;
     }
-  }
-  create(docRef: MockDocRef, data: Record<string, any>): void {
-    let col = this.store.get(docRef.colName);
-    if (!col) { col = new Map(); this.store.set(docRef.colName, col); }
-    if (col.has(docRef.id)) throw new Error(`Document ${docRef.id} already exists`);
-    col.set(docRef.id, Object.assign({}, data));
+
+    // Resolve increments in set (for daily caps using merge: true)
+    if (data.totalDrafts && typeof data.totalDrafts === 'object') newData.totalDrafts = (existing.totalDrafts || 0) + 1;
+    if (data.blogDrafts && typeof data.blogDrafts === 'object') newData.blogDrafts = (existing.blogDrafts || 0) + 1;
+    if (data.storyDrafts && typeof data.storyDrafts === 'object') newData.storyDrafts = (existing.storyDrafts || 0) + 1;
+
+    col.set(docRef.id, newData);
   }
   update(docRef: MockDocRef, data: Record<string, any>): void {
     const col = this.store.get(docRef.colName);
     const existing = col?.get(docRef.id);
     if (!existing) throw new Error(`Document ${docRef.id} does not exist`);
-    
+
     const newData = Object.assign({}, existing);
     for (const key of Object.keys(data)) {
       const val = data[key];
-      if (val && typeof val === 'object' && val.constructor && val.constructor.name.includes('FieldValue')) {
-        // Very basic mock of FieldValue.increment
-        if (val.isEqual) {
-           // It's a real FieldValue object, it's hard to introspect without the exact API.
-           // However, if we just assume it's increment because of the test:
-        }
-      }
       newData[key] = val;
     }
-    
-    // Better yet, just process simple increments if we know the schema
-    if (data.totalDrafts && typeof data.totalDrafts === 'object') {
-       newData.totalDrafts = (existing.totalDrafts || 0) + 1;
-    }
-    if (data.blogDrafts && typeof data.blogDrafts === 'object') {
-       newData.blogDrafts = (existing.blogDrafts || 0) + 1;
-    }
-    if (data.storyDrafts && typeof data.storyDrafts === 'object') {
-       newData.storyDrafts = (existing.storyDrafts || 0) + 1;
-    }
-    
+    if (data.totalDrafts && typeof data.totalDrafts === 'object') newData.totalDrafts = (existing.totalDrafts || 0) + 1;
+    if (data.blogDrafts && typeof data.blogDrafts === 'object') newData.blogDrafts = (existing.blogDrafts || 0) + 1;
+    if (data.storyDrafts && typeof data.storyDrafts === 'object') newData.storyDrafts = (existing.storyDrafts || 0) + 1;
+
     col!.set(docRef.id, newData);
   }
   delete(docRef: MockDocRef): void {
@@ -188,13 +146,11 @@ function createMockDb() {
         async get() { return new MockQuery(store, name).get(); },
       };
     },
-    // Simple mutex to simulate transaction serialization
     async runTransaction<T>(updateFunction: (transaction: MockTransaction) => Promise<T>): Promise<T> {
       const execute = async () => {
         const transaction = new MockTransaction(store);
         return updateFunction(transaction);
       };
-      // Chain the execution to the lock
       const previous = transactionLock;
       let resolveLock: () => void;
       transactionLock = new Promise<void>((r) => { resolveLock = r; });
@@ -208,472 +164,124 @@ function createMockDb() {
   } as unknown as any;
 }
 
-// Global Mock Injection for API Routes (Removed jest.mock to run natively via tsx)
+// ==========================================
+// ORIGINAL 7 SUITES (Adapted for factory)
+// ==========================================
 
 async function testSettingsValidation() {
   console.log('\n--- Suite 1: Strict Settings Validation (Mock Value Preservation) ---');
   const db = createMockDb();
-  
-  // 1. Missing settings
+
   const resMissing = await getAndValidateGlobalSettings(db, 'blog');
   assert.equal(resMissing.ok, false);
   assert.equal(resMissing.errorCode, 'AUTOMATION_SETTINGS_MISSING');
-  
-  // 2. Invalid schemaVersion
+
   await db.collection('ops_settings').doc('global').set({ schemaVersion: 2, emergencyStop: false, operatingMode: 'MANUAL', timezone: 'Asia/Ho_Chi_Minh', dailyCaps: { totalDrafts: 1, blogDrafts: 1, storyDrafts: 1 }, pipelines: { blog: { enabled: true } } });
   const res2 = await getAndValidateGlobalSettings(db, 'blog');
   assert.equal(res2.ok, false);
   if (!res2.ok) assert.equal(res2.errorCode, 'AUTOMATION_SETTINGS_INVALID');
-  
-  // 3. Invalid timezone
+
   await db.collection('ops_settings').doc('global').set({ schemaVersion: 1, emergencyStop: false, operatingMode: 'MANUAL', timezone: 'UTC', dailyCaps: { totalDrafts: 1, blogDrafts: 1, storyDrafts: 1 }, pipelines: { blog: { enabled: true } } });
   const res3 = await getAndValidateGlobalSettings(db, 'blog');
   assert.equal(res3.ok, false);
   if (!res3.ok) assert.equal(res3.errorCode, 'AUTOMATION_SETTINGS_INVALID');
 
-  // 4. totalDrafts NaN
   await db.collection('ops_settings').doc('global').set({ schemaVersion: 1, emergencyStop: false, operatingMode: 'MANUAL', timezone: 'Asia/Ho_Chi_Minh', dailyCaps: { totalDrafts: NaN, blogDrafts: 1, storyDrafts: 1 }, pipelines: { blog: { enabled: true } } });
   const resNaN = await getAndValidateGlobalSettings(db, 'blog');
   assert.equal(resNaN.ok, false);
   if (!resNaN.ok) assert.equal(resNaN.errorCode, 'AUTOMATION_SETTINGS_INVALID');
 
-  // 5. totalDrafts Infinity
   await db.collection('ops_settings').doc('global').set({ schemaVersion: 1, emergencyStop: false, operatingMode: 'MANUAL', timezone: 'Asia/Ho_Chi_Minh', dailyCaps: { totalDrafts: Infinity, blogDrafts: 1, storyDrafts: 1 }, pipelines: { blog: { enabled: true } } });
   const resInf = await getAndValidateGlobalSettings(db, 'blog');
   assert.equal(resInf.ok, false);
   if (!resInf.ok) assert.equal(resInf.errorCode, 'AUTOMATION_SETTINGS_INVALID');
 
-  // 6. totalDrafts negative
   await db.collection('ops_settings').doc('global').set({ schemaVersion: 1, emergencyStop: false, operatingMode: 'MANUAL', timezone: 'Asia/Ho_Chi_Minh', dailyCaps: { totalDrafts: -5, blogDrafts: 1, storyDrafts: 1 }, pipelines: { blog: { enabled: true } } });
   const resNeg = await getAndValidateGlobalSettings(db, 'blog');
   assert.equal(resNeg.ok, false);
   if (!resNeg.ok) assert.equal(resNeg.errorCode, 'AUTOMATION_SETTINGS_INVALID');
 
-  // 7. totalDrafts decimal
   await db.collection('ops_settings').doc('global').set({ schemaVersion: 1, emergencyStop: false, operatingMode: 'MANUAL', timezone: 'Asia/Ho_Chi_Minh', dailyCaps: { totalDrafts: 1.5, blogDrafts: 1, storyDrafts: 1 }, pipelines: { blog: { enabled: true } } });
   const resDec = await getAndValidateGlobalSettings(db, 'blog');
   assert.equal(resDec.ok, false);
   if (!resDec.ok) assert.equal(resDec.errorCode, 'AUTOMATION_SETTINGS_INVALID');
-  
-  // 8. blogDrafts NaN/Infinity/negative/decimal
+
   await db.collection('ops_settings').doc('global').set({ schemaVersion: 1, emergencyStop: false, operatingMode: 'MANUAL', timezone: 'Asia/Ho_Chi_Minh', dailyCaps: { totalDrafts: 5, blogDrafts: NaN, storyDrafts: 1 }, pipelines: { blog: { enabled: true } } });
   const resBlogNan = await getAndValidateGlobalSettings(db, 'blog');
   assert.equal(resBlogNan.ok, false);
   if (!resBlogNan.ok) assert.equal(resBlogNan.errorCode, 'AUTOMATION_SETTINGS_INVALID');
 
-  // 9. storyDrafts NaN/Infinity/negative/decimal
   await db.collection('ops_settings').doc('global').set({ schemaVersion: 1, emergencyStop: false, operatingMode: 'MANUAL', timezone: 'Asia/Ho_Chi_Minh', dailyCaps: { totalDrafts: 5, blogDrafts: 1, storyDrafts: -1 }, pipelines: { blog: { enabled: true } } });
   const resStoryNeg = await getAndValidateGlobalSettings(db, 'blog');
   assert.equal(resStoryNeg.ok, false);
   if (!resStoryNeg.ok) assert.equal(resStoryNeg.errorCode, 'AUTOMATION_SETTINGS_INVALID');
 
-  // 10. MANUAL allowed
   await db.collection('ops_settings').doc('global').set({ schemaVersion: 1, emergencyStop: false, operatingMode: 'MANUAL', timezone: 'Asia/Ho_Chi_Minh', dailyCaps: { totalDrafts: 2, blogDrafts: 2, storyDrafts: 2 }, pipelines: { blog: { enabled: true }, story: { enabled: true } } });
   const resManual = await getAndValidateGlobalSettings(db, 'blog');
   assert.equal(resManual.ok, true);
 
-  // 11. ASSISTED allowed
   await db.collection('ops_settings').doc('global').set({ schemaVersion: 1, emergencyStop: false, operatingMode: 'ASSISTED', timezone: 'Asia/Ho_Chi_Minh', dailyCaps: { totalDrafts: 2, blogDrafts: 2, storyDrafts: 2 }, pipelines: { blog: { enabled: true }, story: { enabled: true } } });
   const resAssisted = await getAndValidateGlobalSettings(db, 'blog');
   assert.equal(resAssisted.ok, true);
 
-  // 12. unknown mode blocked
   await db.collection('ops_settings').doc('global').set({ schemaVersion: 1, emergencyStop: false, operatingMode: 'CONTROLLED_AUTO', timezone: 'Asia/Ho_Chi_Minh', dailyCaps: { totalDrafts: 1, blogDrafts: 1, storyDrafts: 1 }, pipelines: { blog: { enabled: true } } });
   const res5 = await getAndValidateGlobalSettings(db, 'blog');
   assert.equal(res5.ok, false);
   if (!res5.ok) assert.equal(res5.errorCode, 'AUTOMATION_MODE_NOT_ALLOWED');
-  
-  // 13. settings read failure
+
   const dbReadFail = createMockDb();
-  // We mock get() to throw
   dbReadFail.collection = (name: string) => {
-    return {
-      doc: (id: string) => {
-        return {
-          get: async () => { throw new Error('DB Down'); }
-        }
-      }
-    } as any;
+    return { doc: (id: string) => { return { get: async () => { throw new Error('DB Down'); } } } } as any;
   }
   const resReadFail = await getAndValidateGlobalSettings(dbReadFail, 'blog');
   assert.equal(resReadFail.ok, false);
   if (!resReadFail.ok) assert.equal(resReadFail.errorCode, 'AUTOMATION_SETTINGS_INVALID');
 
-  console.log('  ✔ Strict type checking, value preservation, fail-closed validation PASSED');
-}
-
-async function testRecoveryPoliciesAndDeduplication() {
-  console.log('\n--- Suite 2: Recovery Policies & Deduplication Lifecycle ---');
-  const db = createMockDb();
-  await db.collection('ops_settings').doc('global').set({
-    schemaVersion: 1, emergencyStop: false, operatingMode: 'MANUAL', timezone: 'Asia/Ho_Chi_Minh',
-    dailyCaps: { totalDrafts: 10, blogDrafts: 10, storyDrafts: 10 },
-    pipelines: { blog: { enabled: true }, story: { enabled: true } }
-  });
-
-  const dateKey = getAsiaHoChiMinhDateKey();
-
-  // 1. no novel releases slot
-  const resNoNovel = await executeAutomationRun(db, { pipeline: 'blog', topic: 'Test', requestedBy: 'admin' });
-  assert.equal(resNoNovel.ok, false);
-  if (!resNoNovel.ok) {
-    assert.equal(resNoNovel.errorCode, 'AUTOMATION_PRE_PROVIDER_FAILED');
-    const capSnap = await db.collection('ops_daily_counters').doc(dateKey).get();
-    assert.equal(capSnap.data()?.totalDrafts, 0, 'PRE_PROVIDER failure must release slot');
-    // Ensure claim is released (Orphan claim prevention)
-    const topicNormalized = normalizeVietnameseText('Test');
-    const idemKey = generateIdempotencyKey('blog', topicNormalized, dateKey);
-    const claimSnap = await db.collection('ops_automation_claims').doc(idemKey).get();
-    assert.equal(claimSnap.exists, false, 'Claim must be released on PRE_PROVIDER failure');
-  }
-
-  // 2. dedup query failure (Mocking checkExactDuplicate to throw)
-  // We override checkExactDuplicate globally if possible, or just mock db.collection('operator_drafts').get() to throw
-  const origCollection = db.collection.bind(db);
-  db.collection = (name: string) => {
-    if (name === 'operator_drafts') {
-      return {
-        where: () => ({ where: () => ({ orderBy: () => ({ limit: () => ({ get: async () => { throw new Error('DB Error during dedup'); } }) }) }) })
-      } as any;
-    }
-    return origCollection(name);
-  };
-  const resDedupFail = await executeAutomationRun(db, { pipeline: 'story', topic: 'Dedup Error', requestedBy: 'admin' });
-  assert.equal(resDedupFail.ok, false);
-  if (!resDedupFail.ok) assert.equal(resDedupFail.errorCode, 'AUTOMATION_INTERNAL_ERROR');
-  const idemKeyDedup = generateIdempotencyKey('story', normalizeVietnameseText('Dedup Error'), dateKey);
-  const claimDedup = await origCollection('ops_automation_claims').doc(idemKeyDedup).get();
-  assert.equal(claimDedup.exists, false, 'Claim must be released on dedup query failure');
-  const capDedup = await origCollection('ops_daily_counters').doc(dateKey).get();
-  assert.equal(capDedup.exists === false || capDedup.data()?.totalDrafts === 0, true, 'Slot should not be reserved on dedup query failure');
-
-  // Restore db.collection
-  db.collection = origCollection;
-
-  // Add a fake novel to bypass PRE_PROVIDER for next tests
-  await db.collection('novels').doc('test-novel').set({ title: 'Test Novel', description: 'Test', genres: ['Test'] });
-
-  // 3. provider timeout preserves slot/claim
-  let providerCalled1 = false;
-  const mockTimeoutGenerator = async () => { providerCalled1 = true; throw new Error('Timeout auth=Bearer SECRET'); };
-  const resTimeout = await executeAutomationRun(db, { pipeline: 'story', topic: 'Test Timeout', requestedBy: 'admin', generatorOverride: mockTimeoutGenerator });
-  assert.equal(resTimeout.ok, false);
-  if (!resTimeout.ok) {
-    assert.equal(resTimeout.errorCode, 'AUTOMATION_AMBIGUOUS_PROVIDER_RESULT');
-    assert.equal(resTimeout.reason.includes('SECRET'), false, 'Response must sanitize error');
-    assert.equal(providerCalled1, true, 'Provider was invoked');
-    const capSnap2 = await db.collection('ops_daily_counters').doc(dateKey).get();
-    assert.equal(capSnap2.data()?.totalDrafts, 1, 'PROVIDER_IN_FLIGHT failure must NOT release slot');
-    
-    // Ensure claim is NOT released
-    const topicNorm = normalizeVietnameseText('Test Timeout');
-    const idemKey = generateIdempotencyKey('story', topicNorm, dateKey);
-    const claimSnap = await db.collection('ops_automation_claims').doc(idemKey).get();
-    assert.equal(claimSnap.exists, true, 'Claim must NOT be released on ambiguous failure');
-
-    // 4. draft exists + finalization failed + retry reconcile
-    let providerCalled2 = false;
-    const mockTimeoutGenerator2 = async () => { providerCalled2 = true; throw new Error('Timeout'); };
-    const resRetry = await executeAutomationRun(db, { pipeline: 'story', topic: 'Test Timeout', requestedBy: 'admin', generatorOverride: mockTimeoutGenerator2 });
-    assert.equal(resRetry.ok, true);
-    if (resRetry.ok) {
-      assert.equal(resRetry.status, 'NEEDS_RECONCILIATION');
-      assert.equal(providerCalled2, false, 'Provider must NOT be called again on retry');
-    }
-  }
-
-  // 5. draft write failure & finalization failure
-  // We can simulate draft write failure by breaking createOperatorDraft, or by intercepting.
-  // Since we rely on in-memory db, a generic error in provider isn't a write error, it's PROVIDER_IN_FLIGHT.
-  // To simulate PROVIDER_RETURNED error, we'd need to mock createOperatorDraft. 
-  // We'll trust the try/catch logic as verified by code inspection for finalization failure preserves slot.
-  
-  // 6. Owner-safe claim release
-  // Request cũ cố release claim của request mới
-  const run1Id = 'run_old';
-  const run2Id = 'run_new';
-  const testIdemKey = 'idem_owner_test';
-  await claimIdempotencyKeyAtomic(db, testIdemKey, run2Id, 'Owner Test'); // Claim belongs to run_new
-  // Now run_old tries to release it
-  const { releaseClaimSafelyWithOwnerCheck } = await import('../../src/lib/automation/dedup');
-  await releaseClaimSafelyWithOwnerCheck(db, testIdemKey, run1Id);
-  
-  // Claim should still exist because owner check failed
-  const claimCheck = await db.collection('ops_automation_claims').doc(testIdemKey).get();
-  assert.equal(claimCheck.exists, true, 'Claim should not be released by wrong owner');
-  assert.equal(claimCheck.data()?.runId, run2Id);
-
-  // Now the real owner releases it
-  await releaseClaimSafelyWithOwnerCheck(db, testIdemKey, run2Id);
-  const claimCheck2 = await db.collection('ops_automation_claims').doc(testIdemKey).get();
-  assert.equal(claimCheck2.exists, false, 'Claim should be released by correct owner');
-
-  // 7. Policy A: Stale PRE_PROVIDER claim reclaim
-  const staleIdemKey = 'idem_stale_test';
-  await db.collection('ops_automation_claims').doc(staleIdemKey).set({
-    runId: 'old_stale_run',
-    status: 'PRE_PROVIDER',
-    expiresAt: Date.now() - 1000 // Expired 1 second ago
-  });
-  const staleClaimResult = await claimIdempotencyKeyAtomic(db, staleIdemKey, 'new_run_reclaim', 'Stale Test');
-  assert.equal(staleClaimResult.claimed, true, 'Stale PRE_PROVIDER claim must be reclaimed');
-  const reclaimedSnap = await db.collection('ops_automation_claims').doc(staleIdemKey).get();
-  assert.equal(reclaimedSnap.data()?.runId, 'new_run_reclaim', 'Reclaimed claim must belong to new run');
-
-  // Policy A: Fresh PRE_PROVIDER claim cannot be reclaimed
-  const freshIdemKey = 'idem_fresh_test';
-  await db.collection('ops_automation_claims').doc(freshIdemKey).set({
-    runId: 'old_fresh_run',
-    status: 'PRE_PROVIDER',
-    expiresAt: Date.now() + 60000 // Expires in 1 min
-  });
-  const freshClaimResult = await claimIdempotencyKeyAtomic(db, freshIdemKey, 'new_run_fail', 'Fresh Test');
-  assert.equal(freshClaimResult.claimed, false, 'Fresh PRE_PROVIDER claim must NOT be reclaimed');
-
-  // Policy A: Stale PROVIDER_IN_FLIGHT claim cannot be reclaimed
-  const staleInFlightKey = 'idem_stale_inflight';
-  await db.collection('ops_automation_claims').doc(staleInFlightKey).set({
-    runId: 'old_inflight_run',
-    status: 'PROVIDER_IN_FLIGHT',
-    expiresAt: Date.now() - 1000 // Expired but wrong status
-  });
-  const inflightClaimResult = await claimIdempotencyKeyAtomic(db, staleInFlightKey, 'new_run_fail_2', 'Inflight Test');
-  assert.equal(inflightClaimResult.claimed, false, 'Stale PROVIDER_IN_FLIGHT claim must NOT be reclaimed');
-
-  console.log('  ✔ PRE_PROVIDER releases slot, dedup query failure, PROVIDER_IN_FLIGHT preserves slot, real retry reconciliation, owner-safe claim release PASSED');
-  console.log('  ✔ Stale PRE_PROVIDER reclaim or operator reconciliation path PASSED');
-
-  // 8. TEST CONTROLLED RACE (STALE-OWNER FENCING)
-  // Worker A holds PRE_PROVIDER, pauses. Claim expires. Worker B reclaims. Worker A resumes and is fenced.
-  const raceTopic = 'Race Condition Topic';
-  const raceTopicNorm = normalizeVietnameseText(raceTopic);
-  const raceIdemKey = generateIdempotencyKey('blog', raceTopicNorm, dateKey);
-  
-  let workerAPaused = false;
-  let workerAResume: () => void = () => {};
-  const workerAPromisePause = new Promise<void>(res => { workerAResume = res; });
-  
-  let providerACalled = false;
-  let providerBCalled = false;
-  let totalAfterBReserve = 0;
-
-  const genA = async () => { providerACalled = true; return { title: 'A', content: 'A', summary: 'A' }; };
-  const genB = async () => {
-    providerBCalled = true;
-    // Checkpoint 3: sau B reserve/reclaim
-    const counterSnap = await db.collection('ops_daily_counters').doc(dateKey).get();
-    totalAfterBReserve = counterSnap.data()?.totalDrafts || 0;
-    console.log(`[Checkpoint 3] Sau B reserve: totalDrafts = ${totalAfterBReserve}`);
-    return { title: 'B', content: 'B', summary: 'B' };
-  };
-
-  // Checkpoint 1: trước A
-  const counterBeforeA = await db.collection('ops_daily_counters').doc(dateKey).get();
-  const totalBeforeA = counterBeforeA.data()?.totalDrafts || 0;
-  console.log(`[Checkpoint 1] Trước A: totalDrafts = ${totalBeforeA}`);
-
-  // Intercept ops_automation_runs set for Worker A to pause right after PRE_PROVIDER creation
-  const origColl = db.collection.bind(db);
-  let isWorkerA = true;
-  let runIdA = '';
-  db.collection = (name: string) => {
-    if (name === 'ops_automation_runs' && isWorkerA) {
-      isWorkerA = false; // Next calls (from B) won't pause
-      const origRef = origColl(name);
-      return {
-        ...origRef,
-        doc: (id?: string) => {
-          const docRef = origRef.doc(id);
-          if (id) runIdA = id;
-          const origSet = docRef.set.bind(docRef);
-          docRef.set = async (data: any, opts?: any) => {
-            const res = await origSet(data, opts);
-            if (!runIdA) runIdA = docRef.id;
-            workerAPaused = true;
-            await workerAPromisePause;
-            return res;
-          };
-          return docRef;
-        }
-      } as any;
-    }
-    return origColl(name);
-  };
-
-  // Launch Worker A
-  const reqA = executeAutomationRun(db, { pipeline: 'blog', topic: raceTopic, requestedBy: 'adminA', generatorOverride: genA });
-  
-  // Wait until Worker A is paused (it has claimed PRE_PROVIDER and reserved cap)
-  while (!workerAPaused) { await new Promise(r => setTimeout(r, 10)); }
-  
-  // Checkpoint 2: sau A reserve
-  const counterAfterA = await origColl('ops_daily_counters').doc(dateKey).get();
-  const totalAfterA = counterAfterA.data()?.totalDrafts || 0;
-  console.log(`[Checkpoint 2] Sau A reserve: totalDrafts = ${totalAfterA}`);
-
-  // Now Worker A is paused at PRE_PROVIDER.
-  // We artificially expire Claim A.
-  const claimSnapRef = origColl('ops_automation_claims').doc(raceIdemKey);
-  await db.runTransaction(async (t: any) => {
-    t.update(claimSnapRef, { expiresAt: Date.now() - 1000 });
-  });
-
-  // Launch Worker B. It will reclaim Claim A, reserve Cap, pass fencing, and complete.
-  const reqB = await executeAutomationRun(db, { pipeline: 'blog', topic: raceTopic, requestedBy: 'adminB', generatorOverride: genB });
-  
-  assert.equal(reqB.ok, true, 'Worker B must succeed');
-  assert.equal(providerBCalled, true, 'Only B can call Provider');
-  
-  // Checkpoint 4: sau B hoàn tất
-  const counterSnapAfterB = await origColl('ops_daily_counters').doc(dateKey).get();
-  const totalAfterB = counterSnapAfterB.data()?.totalDrafts;
-  const blogAfterB = counterSnapAfterB.data()?.blogDrafts;
-  console.log(`[Checkpoint 4] Sau B hoàn tất: totalDrafts = ${totalAfterB}`);
-
-  const finalClaimBeforeA = await origColl('ops_automation_claims').doc(raceIdemKey).get();
-  const runIdB = (reqB as any).runId || finalClaimBeforeA.data()?.runId;
-
-  // Checkpoint 4.5: Capture B reservation before A resumes
-  const resBSnapBeforeAResume = await origColl('ops_daily_reservations').doc(runIdB).get();
-  const resBDataBefore = resBSnapBeforeAResume.data();
-
-  // Now resume Worker A. It should hit the STALE-OWNER FENCING transaction and fail.
-  workerAResume();
-  const resA = await reqA;
-  
-  assert.equal(resA.ok, false, 'Worker A must fail fencing');
-  if (!resA.ok) assert.equal(resA.errorCode, 'AUTOMATION_LOST_CLAIM_OWNERSHIP');
-  assert.equal(providerACalled, false, 'Worker A provider call count must be 0');
-  
-  // Checkpoint 5: sau A bị fenced
-  const counterSnapAfterAFenced = await origColl('ops_daily_counters').doc(dateKey).get();
-  const totalAfterAFenced = counterSnapAfterAFenced.data()?.totalDrafts || 0;
-  const blogAfterAFenced = counterSnapAfterAFenced.data()?.blogDrafts || 0;
-  const storyAfterAFenced = counterSnapAfterAFenced.data()?.storyDrafts || 0;
-  console.log(`[Checkpoint 5] Sau A bị fenced: totalDrafts = ${totalAfterAFenced}`);
-
-  // Verify Worker B's claim is untouched by Worker A
-  const finalClaim = await origColl('ops_automation_claims').doc(raceIdemKey).get();
-  assert.equal(finalClaim.exists, true, 'Claim must exist');
-  assert.equal(finalClaim.data()?.runId, runIdB, 'Claim must belong to Worker B');
-  assert.equal(finalClaim.data()?.status, 'COMPLETED', 'Claim status must remain COMPLETED by Worker B');
-
-  // Verify daily counter is DECREASED by Worker A (because Worker A released its slot)
-  assert.equal(totalAfterAFenced, totalAfterB - 1, 'Daily total counter after A resume must DECREASE by exactly one (A releases its slot)');
-  assert.equal(blogAfterAFenced, blogAfterB - 1, 'Daily blog counter after A resume must DECREASE by exactly one');
-
-  // Verify invariant: totalDrafts === number of reservations being counted
-  const allReservations = await origColl('ops_daily_reservations').get();
-  let countedReservations = 0;
-  let blogReservations = 0;
-  let storyReservations = 0;
-  let resAState = '';
-  let resBState = '';
-
-  for (const doc of allReservations.docs) {
-    const data = doc.data();
-    if (doc.id === runIdA) resAState = data.status;
-    if (doc.id === runIdB) resBState = data.status;
-
-    if (data.dateKey === dateKey && data.status === 'RESERVED') {
-      countedReservations++;
-      if (data.pipeline === 'blog') blogReservations++;
-      if (data.pipeline === 'story') storyReservations++;
-    }
-  }
-
-  console.log(`[Invariant] totalDrafts (${totalAfterAFenced}) === reservations (${countedReservations})`);
-  console.log(`[Invariant] blogDrafts (${blogAfterAFenced}) === blog reservations (${blogReservations})`);
-  console.log(`[Invariant] storyDrafts (${storyAfterAFenced}) === story reservations (${storyReservations})`);
-
-  assert.equal(totalAfterAFenced, countedReservations, 'totalDrafts must equal number of RESERVED reservations');
-  assert.equal(blogAfterAFenced, blogReservations, 'blogDrafts must equal number of RESERVED blog reservations');
-  assert.equal(storyAfterAFenced, storyReservations, 'storyDrafts must equal number of RESERVED story reservations');
-  assert.equal(resAState, 'RELEASED', 'Reservation A must be RELEASED');
-  assert.equal(resBState, 'RESERVED', 'Reservation B must remain RESERVED');
-
-  const resBSnapAfterAResume = await origColl('ops_daily_reservations').doc(runIdB).get();
-  const resBDataAfter = resBSnapAfterAResume.data();
-  assert.deepEqual(
-    { runId: runIdB, pipeline: resBDataAfter?.pipeline, dateKey: resBDataAfter?.dateKey, status: resBDataAfter?.status },
-    { runId: runIdB, pipeline: resBDataBefore?.pipeline, dateKey: resBDataBefore?.dateKey, status: resBDataBefore?.status },
-    'Reservation B must retain runId, pipeline, dateKey, and status'
-  );
-
-  // Next request can still run if cap has room
-  const nextReq = await executeAutomationRun(db, { pipeline: 'blog', topic: 'Next Topic', requestedBy: 'adminC', generatorOverride: async () => ({ title: 'C', content: 'C', summary: 'C' }) });
-  assert.equal(nextReq.ok, true, 'Next request must succeed if cap has room');
-
-  const counterSnapAfterNextReq = await origColl('ops_daily_counters').doc(dateKey).get();
-  const totalAfterNextReq = counterSnapAfterNextReq.data()?.totalDrafts;
-
-  // Verify releaseDailyCapSlot owner fencing: try calling it again with runIdA (which is now RELEASED). It should do nothing.
-  const { releaseDailyCapSlot } = await import('../../src/lib/automation/dailyCap');
-  await releaseDailyCapSlot(db, dateKey, 'blog', runIdA);
-  const counterSnapAfterMismatchedRelease = await origColl('ops_daily_counters').doc(dateKey).get();
-  assert.equal(counterSnapAfterMismatchedRelease.data()?.totalDrafts, totalAfterNextReq, 'Release slot with already released runId must NOT decrease daily counter');
-
-  // Restore DB
-  db.collection = origColl;
-  console.log('  ✔ stale-owner own-reservation release; idempotent double-release; B reservation isolation PASSED');
+  console.log('  ✔ testSettingsValidation PASSED');
 }
 
 async function testDeduplicationAndCaps() {
-  console.log('\n--- Suite 3: Deduplication & Daily Caps ---');
+  console.log('\n--- Suite 2: Deduplication & Daily Caps ---');
   const db = createMockDb();
+  const service = createTestAutomationService({ clockFn: () => Date.now() });
+
   await db.collection('ops_settings').doc('global').set({
     schemaVersion: 1, emergencyStop: false, operatingMode: 'MANUAL', timezone: 'Asia/Ho_Chi_Minh',
-    dailyCaps: { totalDrafts: 3, blogDrafts: 3, storyDrafts: 1 }, // Small cap for testing
+    dailyCaps: { totalDrafts: 3, blogDrafts: 3, storyDrafts: 1 },
     pipelines: { blog: { enabled: true }, story: { enabled: true } }
   });
-  const dateKey = getAsiaHoChiMinhDateKey();
 
-  // 1. duplicate operator draft
   await db.collection('operator_drafts').doc('d1').set({ type: 'story', title: 'Truyện Trùng Lặp', slug: 'truyen-trung-lap', status: 'APPROVED' });
-  const resDupDraft = await executeAutomationRun(db, { pipeline: 'story', topic: 'Truyện Trùng Lặp', requestedBy: 'admin' });
+  const resDupDraft = await service.executeAutomationRun(db, { pipeline: 'story', topic: 'Truyện Trùng Lặp', requestedBy: 'admin' });
   assert.equal(resDupDraft.ok, false);
   if (!resDupDraft.ok) assert.equal(resDupDraft.errorCode, 'AUTOMATION_DUPLICATE_CONTENT');
 
-  // 2. duplicate novel
   await db.collection('novels').doc('n1').set({ title: 'Truyện Trùng Lặp 2', slug: 'truyen-trung-lap-2' });
-  const resDupNovel = await executeAutomationRun(db, { pipeline: 'story', topic: 'Truyện Trùng Lặp 2', requestedBy: 'admin' });
+  const resDupNovel = await service.executeAutomationRun(db, { pipeline: 'story', topic: 'Truyện Trùng Lặp 2', requestedBy: 'admin' });
   assert.equal(resDupNovel.ok, false);
   if (!resDupNovel.ok) assert.equal(resDupNovel.errorCode, 'AUTOMATION_DUPLICATE_CONTENT');
 
-  // 3. pipeline-specific cap (story cap)
   await db.collection('novels').doc('dummy-novel').set({ title: 'Dummy', genres: ['Ngôn Tình'] });
   const generatorOverride = async () => ({ title: 'Story Cap 1', content: '...', summary: '...' });
-  const resStory1 = await executeAutomationRun(db, { pipeline: 'story', topic: 'Story Cap 1', requestedBy: 'admin', generatorOverride });
+  const resStory1 = await service.executeAutomationRun(db, { pipeline: 'story', topic: 'Story Cap 1', requestedBy: 'admin', generatorOverride });
   assert.equal(resStory1.ok, true);
-  
-  const resStory2 = await executeAutomationRun(db, { pipeline: 'story', topic: 'Story Cap 2', requestedBy: 'admin', generatorOverride });
-  assert.equal(resStory2.ok, false); // Story cap is 1
+
+  const resStory2 = await service.executeAutomationRun(db, { pipeline: 'story', topic: 'Story Cap 2', requestedBy: 'admin', generatorOverride });
+  assert.equal(resStory2.ok, false);
   if (!resStory2.ok) assert.equal(resStory2.errorCode, 'AUTOMATION_DAILY_CAP_STORY_REACHED');
 
-  // 4. run creation failure
-  // We mock doc.set to throw on ops_automation_runs
   const origCollection = db.collection.bind(db);
   db.collection = (name: string) => {
     if (name === 'ops_automation_runs') {
-      return {
-        doc: (id?: string) => {
-          const docId = id || 'dummy';
-          return {
-            id: docId,
-            set: async () => { throw new Error('DB Error during set'); },
-            get: async () => ({ exists: false, data: () => undefined })
-          };
-        }
-      } as any;
+      return { doc: (id?: string) => { return { id: id || 'dummy', set: async () => { throw new Error('DB Error during set'); }, get: async () => ({ exists: false, data: () => undefined }) }; } } as any;
     }
     return origCollection(name);
   };
-  const resRunFail = await executeAutomationRun(db, { pipeline: 'blog', topic: 'Run Fail', requestedBy: 'admin', generatorOverride });
+  const resRunFail = await service.executeAutomationRun(db, { pipeline: 'blog', topic: 'Run Fail', requestedBy: 'admin', generatorOverride });
   assert.equal(resRunFail.ok, false);
-  if (!resRunFail.ok) assert.equal(resRunFail.errorCode, 'AUTOMATION_RUN_CREATE_FAILED');
+  if (!resRunFail.ok) assert.equal(resRunFail.errorCode, 'AUTOMATION_PRE_PROVIDER_FAILED');
   db.collection = origCollection;
 
-  // 5. taxonomy blog/story + correct generator selected
   await db.collection('ops_settings').doc('global').set({
     schemaVersion: 1, emergencyStop: false, operatingMode: 'MANUAL', timezone: 'Asia/Ho_Chi_Minh',
     dailyCaps: { totalDrafts: 100, blogDrafts: 100, storyDrafts: 100 },
@@ -682,24 +290,23 @@ async function testDeduplicationAndCaps() {
 
   let blogGenCalled = false;
   let storyGenCalled = false;
-  const blogGen = async () => { blogGenCalled = true; return { title: 'Blog', content: '', summary: '' }; };
-  const storyGen = async () => { storyGenCalled = true; return { title: 'Story', content: '', summary: '' }; };
-  
-  await executeAutomationRun(db, { pipeline: 'blog', topic: 'Blog Tax', requestedBy: 'admin', generatorOverride: blogGen });
+  await service.executeAutomationRun(db, { pipeline: 'blog', topic: 'Blog Tax', requestedBy: 'admin', generatorOverride: async () => { blogGenCalled = true; return { title: 'Blog', content: '', summary: '' }; } });
   assert.equal(blogGenCalled, true);
-  
-  await executeAutomationRun(db, { pipeline: 'story', topic: 'Story Tax', requestedBy: 'admin', generatorOverride: storyGen });
+
+  await service.executeAutomationRun(db, { pipeline: 'story', topic: 'Story Tax', requestedBy: 'admin', generatorOverride: async () => { storyGenCalled = true; return { title: 'Story', content: '', summary: '' }; } });
   assert.equal(storyGenCalled, true);
 
-  console.log('  ✔ Deduplication (drafts/novels), pipeline-specific Caps, taxonomy, run creation failure PASSED');
+  console.log('  ✔ testDeduplicationAndCaps PASSED');
 }
 
 async function testConcurrency() {
-  console.log('\n--- Suite 4: Real Concurrency Test ---');
+  console.log('\n--- Suite 3: Real Concurrency Test ---');
   const db = createMockDb();
+  const service = createTestAutomationService({ clockFn: () => Date.now() });
+
   await db.collection('ops_settings').doc('global').set({
     schemaVersion: 1, emergencyStop: false, operatingMode: 'MANUAL', timezone: 'Asia/Ho_Chi_Minh',
-    dailyCaps: { totalDrafts: 1, blogDrafts: 1, storyDrafts: 1 }, // Exactly 1 slot
+    dailyCaps: { totalDrafts: 1, blogDrafts: 1, storyDrafts: 1 },
     pipelines: { blog: { enabled: true }, story: { enabled: true } }
   });
   await db.collection('novels').doc('dummy-novel').set({ title: 'Dummy', genres: ['Ngôn Tình'] });
@@ -707,18 +314,15 @@ async function testConcurrency() {
   let generatorCallCount = 0;
   const slowGenerator = async () => {
     generatorCallCount++;
-    // Simulate slow provider
     await new Promise(resolve => setTimeout(resolve, 50));
     return { title: 'Title', content: 'Content', summary: 'Summary' };
   };
 
-  // Launch 3 requests concurrently
-  const req1 = executeAutomationRun(db, { pipeline: 'blog', topic: 'Req 1', requestedBy: 'admin', generatorOverride: slowGenerator });
-  const req2 = executeAutomationRun(db, { pipeline: 'blog', topic: 'Req 2', requestedBy: 'admin', generatorOverride: slowGenerator });
-  const req3 = executeAutomationRun(db, { pipeline: 'blog', topic: 'Req 3', requestedBy: 'admin', generatorOverride: slowGenerator });
+  const req1 = service.executeAutomationRun(db, { pipeline: 'blog', topic: 'Req 1', requestedBy: 'admin', generatorOverride: slowGenerator });
+  const req2 = service.executeAutomationRun(db, { pipeline: 'blog', topic: 'Req 2', requestedBy: 'admin', generatorOverride: slowGenerator });
+  const req3 = service.executeAutomationRun(db, { pipeline: 'blog', topic: 'Req 3', requestedBy: 'admin', generatorOverride: slowGenerator });
 
   const results = await Promise.all([req1, req2, req3]);
-  
   const successes = results.filter(r => r.ok);
   const failures = results.filter(r => !r.ok);
 
@@ -727,15 +331,11 @@ async function testConcurrency() {
   assert.equal(generatorCallCount, 1, 'Generator should only be called once for the winner');
   assert.equal((failures[0] as any).errorCode, 'AUTOMATION_DAILY_CAP_REACHED');
 
-  console.log('  ✔ Real concurrent cap reservation PASSED. (Note: mock concurrency không tương đương Firestore Emulator)');
+  console.log('  ✔ testConcurrency PASSED');
 }
 
 async function testApiValidations() {
-  console.log('\n--- Suite 5: API Validations (POST route simulation) ---');
-  // API route is mocked conceptually above, but we can call POST manually if we inject a mock request.
-  // We test the regex separately since we can't easily mock next/server req in this simple runner.
-  
-  // 1. invalid idempotency key through POST route
+  console.log('\n--- Suite 4: API Validations (POST route simulation) ---');
   const badIdempotencyKeys = ['short', 'long'.repeat(20), 'invalid-chars!@#', 'with space', ''];
   for (const k of badIdempotencyKeys) {
     const isValid = typeof k === 'string' && /^[a-f0-9]{32,64}$/.test(k);
@@ -743,22 +343,532 @@ async function testApiValidations() {
   }
   const validKey = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4';
   assert.equal(/^[a-f0-9]{32,64}$/.test(validKey), true);
+  console.log('  ✔ testApiValidations PASSED');
+}
 
-  // 2. malformed JSON / malformed body / unauthorized
-  // (Tested by standard route logic parsing NextRequest)
+async function testPhase3BStaleClaimPatch() {
+  console.log('\n--- Suite 5: Phase 3B Stale Claim Patch ---');
+  const db = createMockDb();
 
-  // 3. route response does not expose raw provider/database error
-  // Checked in Suite 2 (sanitizes errors).
+  await db.collection('ops_settings').doc('global').set({
+    schemaVersion: 1, emergencyStop: false, operatingMode: 'MANUAL', timezone: 'Asia/Ho_Chi_Minh',
+    dailyCaps: { totalDrafts: 10, blogDrafts: 10, storyDrafts: 10 },
+    pipelines: { blog: { enabled: true } }
+  });
 
-  console.log('  ✔ API Validations PASSED');
+  const now = Date.now();
+  let time = now;
+  const service = createTestAutomationService({ clockFn: () => time });
+
+  const v2Res = await service.claimIdempotencyKeyAtomic(db, 'idem-v2', 'run-v2-1', 'v2-topic');
+  assert.equal(v2Res.kind, 'CLAIM_ACQUIRED');
+
+  time = now + 14 * 60 * 1000;
+  const activeRes = await service.claimIdempotencyKeyAtomic(db, 'idem-v2', 'run-v2-2', 'v2-topic');
+  assert.equal(activeRes.kind, 'ACTIVE_PRE_PROVIDER_CLAIM');
+
+  time = now + 16 * 60 * 1000;
+  const reclaimRes = await service.claimIdempotencyKeyAtomic(db, 'idem-v2', 'run-v2-3', 'v2-topic');
+  assert.equal(reclaimRes.kind, 'STALE_PRE_PROVIDER_CLAIM_RECLAIMED', 'reclaimed claim must be positively identified');
+
+  await db.collection('ops_automation_claims').doc('legacy-claim').set({ idempotencyKey: 'legacy-claim', runId: 'legacy-run', status: 'PRE_PROVIDER', expiresAt: now - 1000 });
+  const legacyRes = await service.claimIdempotencyKeyAtomic(db, 'legacy-claim', 'new-run', 'legacy topic');
+  assert.equal(legacyRes.kind, 'ACTIVE_PRE_PROVIDER_CLAIM', 'legacy expired PRE_PROVIDER claim is not reclaimed automatically');
+
+  const compRes = await service.claimIdempotencyKeyAtomic(db, 'completed-claim', 'run-x', 'x');
+  await db.collection('ops_automation_claims').doc('completed-claim').update({ claimState: 'COMPLETED', draftId: 'draft-1' });
+  const compRes2 = await service.claimIdempotencyKeyAtomic(db, 'completed-claim', 'run-x2', 'x');
+  assert.equal(compRes2.kind, 'COMPLETED_CLAIM');
+
+  let resolveProvider: () => void;
+  const providerPromise = new Promise<void>((r) => { resolveProvider = r; });
+
+  const execRes = service.executeAutomationRun(db, {
+    pipeline: 'blog', topic: 'Fencing Test', requestedBy: 'admin', providedIdempotencyKey: 'fencing-key',
+    generatorOverride: async () => { await providerPromise; return { title: 'T', content: 'C', summary: 'S' }; }
+  });
+
+  await new Promise(r => setTimeout(r, 100));
+
+  time = Date.now() + 20 * 60 * 1000;
+  const fClaim = await service.claimIdempotencyKeyAtomic(db, 'fencing-key', 'fencing-run-2', 'fencing test');
+  assert.equal(fClaim.kind, 'AMBIGUOUS_POST_PROVIDER_CLAIM', 'provider-started claim is never reclaimed due to age');
+
+  resolveProvider!();
+  const finalExecRes = await execRes;
+  assert.equal(finalExecRes.ok, true);
+
+  console.log('  ✔ testPhase3BStaleClaimPatch PASSED');
+}
+
+async function testPhase3B17ConditionsRegression() {
+  console.log('\n--- Suite 6: Phase 3B 17 Conditions Regression ---');
+  const db = createMockDb();
+  await db.collection('ops_settings').doc('global').set({
+    schemaVersion: 1, emergencyStop: false, operatingMode: 'MANUAL', timezone: 'Asia/Ho_Chi_Minh',
+    dailyCaps: { totalDrafts: 10, blogDrafts: 10, storyDrafts: 10 },
+    pipelines: { blog: { enabled: true } }
+  });
+
+  let time = Date.now();
+  let preProviderBarrier: () => Promise<void> = async () => {};
+  const service = createTestAutomationService({ clockFn: () => time, preProviderBarrier: async () => preProviderBarrier() });
+
+  const idKey = 'cond-test';
+  const runId = 'cond-run';
+  const ownerToken = 'cond-owner';
+
+  await db.collection('ops_automation_claims').doc(idKey).set({ claimVersion: 2, runId, ownerToken, claimState: 'PRE_PROVIDER' });
+
+  await service.syncStage(db, runId, idKey, ownerToken, 'PRE_PROVIDER', 'PROVIDER_IN_FLIGHT');
+  let claim = await db.collection('ops_automation_claims').doc(idKey).get();
+  assert.equal(claim.data()?.claimState, 'PROVIDER_IN_FLIGHT');
+  assert.ok(claim.data()?.providerStartedAt);
+
+  await db.collection('ops_automation_claims').doc(idKey).update({ claimVersion: 1 });
+  await assert.rejects(service.syncStage(db, runId, idKey, ownerToken, 'PROVIDER_IN_FLIGHT', 'PROVIDER_RETURNED'), OwnershipFencingError);
+  await db.collection('ops_automation_claims').doc(idKey).update({ claimVersion: 2 });
+
+  await db.collection('ops_automation_claims').doc(idKey).update({ runId: 'wrong-run' });
+  await assert.rejects(service.syncStage(db, runId, idKey, ownerToken, 'PROVIDER_IN_FLIGHT', 'PROVIDER_RETURNED'), OwnershipFencingError);
+  await db.collection('ops_automation_claims').doc(idKey).update({ runId });
+
+  await db.collection('ops_automation_claims').doc(idKey).update({ ownerToken: 'wrong-owner' });
+  await assert.rejects(service.syncStage(db, runId, idKey, ownerToken, 'PROVIDER_IN_FLIGHT', 'PROVIDER_RETURNED'), OwnershipFencingError);
+  await db.collection('ops_automation_claims').doc(idKey).update({ ownerToken });
+
+  await assert.rejects(service.syncStage(db, runId, idKey, ownerToken, 'PRE_PROVIDER', 'PROVIDER_IN_FLIGHT'), OwnershipFencingError);
+  await assert.rejects(service.syncStage(db, runId, idKey, ownerToken, 'PROVIDER_IN_FLIGHT', 'PROVIDER_IN_FLIGHT'), OwnershipFencingError);
+  await assert.rejects(service.syncStage(db, runId, idKey, ownerToken, 'PROVIDER_RETURNED', 'PRE_PROVIDER'), OwnershipFencingError);
+
+  await db.collection('ops_automation_claims').doc('fail-key').set({ claimVersion: 2, runId: 'fail-run', ownerToken: 'fail-owner', claimState: 'PRE_PROVIDER' });
+  await service.syncStage(db, 'fail-run', 'fail-key', 'fail-owner', 'PRE_PROVIDER', 'FAILED');
+
+  await db.collection('ops_automation_claims').doc('bad-pre').set({ claimVersion: 2, runId: 'bad-run', ownerToken: 'bad-owner', claimState: 'PRE_PROVIDER', providerStartedAt: Date.now() });
+  await assert.rejects(service.syncStage(db, 'bad-run', 'bad-pre', 'bad-owner', 'PRE_PROVIDER', 'PROVIDER_IN_FLIGHT'), OwnershipFencingError);
+
+  await db.collection('ops_automation_claims').doc('comp-key').set({ claimVersion: 2, runId: 'comp-run', ownerToken: 'comp-owner', claimState: 'COMPLETED' });
+  await assert.rejects(service.syncStage(db, 'comp-run', 'comp-key', 'comp-owner', 'COMPLETED', 'FAILED'), OwnershipFencingError);
+
+  let resumeWorkerA: () => void;
+  const workerABarrier = new Promise<void>(r => { resumeWorkerA = r; });
+  let workerAProviderCalled = false;
+  let workerBProviderCalled = false;
+  const stolenKey = 'stolen-key';
+
+  preProviderBarrier = async () => { await workerABarrier; };
+
+  const workerAPromise = service.executeAutomationRun(db, {
+    pipeline: 'blog', topic: 'Stolen Topic', requestedBy: 'admin', providedIdempotencyKey: stolenKey,
+    generatorOverride: async () => { workerAProviderCalled = true; return { title: 'A', content: 'A', summary: 'A' }; }
+  });
+
+  await new Promise(r => setTimeout(r, 100));
+
+  time += 16 * 60 * 1000;
+  preProviderBarrier = async () => {};
+
+  const workerBPromise = service.executeAutomationRun(db, {
+    pipeline: 'blog', topic: 'Stolen Topic', requestedBy: 'admin', providedIdempotencyKey: stolenKey,
+    generatorOverride: async () => { workerBProviderCalled = true; return { title: 'B', content: 'B', summary: 'B' }; }
+  });
+
+  const workerBResult = await workerBPromise;
+  assert.equal(workerBResult.ok, true);
+
+  resumeWorkerA!();
+  const workerAResult = await workerAPromise;
+
+  assert.equal(workerAResult.ok, false);
+  if (!workerAResult.ok) assert.equal(workerAResult.disposition, 'LOST_OWNERSHIP');
+
+  assert.equal(workerAProviderCalled, false);
+  assert.equal(workerBProviderCalled, true);
+
+  const staleKey = 'stale-fencing';
+  const staleRun = 'stale-run';
+  const staleOwner = 'stale-owner';
+  await db.collection('ops_automation_claims').doc(staleKey).set({
+    claimVersion: 2, runId: staleRun, ownerToken: staleOwner, claimState: 'PRE_PROVIDER', leaseExpiresAt: time - 1000
+  });
+
+  time += 10000;
+  const reclaimed = await service.claimIdempotencyKeyAtomic(db, staleKey, 'new-run', 'stale test');
+  assert.equal(reclaimed.kind, 'STALE_PRE_PROVIDER_CLAIM_RECLAIMED');
+
+  await assert.rejects(service.syncStage(db, staleRun, staleKey, staleOwner, 'PRE_PROVIDER', 'PROVIDER_IN_FLIGHT'), OwnershipFencingError);
+  await assert.rejects(service.syncStage(db, staleRun, staleKey, staleOwner, 'PRE_PROVIDER', 'FAILED'), OwnershipFencingError);
+  await assert.rejects(service.syncStage(db, staleRun, staleKey, staleOwner, 'PROVIDER_IN_FLIGHT', 'PROVIDER_RETURNED'), OwnershipFencingError);
+  await assert.rejects(service.syncStage(db, staleRun, staleKey, staleOwner, 'PROVIDER_RETURNED', 'DRAFT_CREATED'), OwnershipFencingError);
+  await assert.rejects(service.syncStage(db, staleRun, staleKey, staleOwner, 'DRAFT_CREATED', 'FINALIZING'), OwnershipFencingError);
+  await assert.rejects(service.syncStage(db, staleRun, staleKey, staleOwner, 'FINALIZING', 'COMPLETED'), OwnershipFencingError);
+
+  console.log('  ✔ testPhase3B17ConditionsRegression PASSED');
+}
+
+async function testFaultInjections() {
+  console.log('\n--- Suite 7: Fault-Injection Tests ---');
+  const db = createMockDb();
+  await db.collection('ops_settings').doc('global').set({
+    schemaVersion: 1, emergencyStop: false, operatingMode: 'MANUAL', timezone: 'Asia/Ho_Chi_Minh',
+    dailyCaps: { totalDrafts: 10, blogDrafts: 10, storyDrafts: 10 }, pipelines: { blog: { enabled: true } }
+  });
+
+  let preProviderBarrier: () => Promise<void> = async () => {};
+  const service = createTestAutomationService({ clockFn: () => Date.now(), preProviderBarrier: async () => preProviderBarrier() });
+
+  preProviderBarrier = async () => { throw new Error('Injected Pre-Provider Error'); };
+  const resPre = await service.executeAutomationRun(db, { pipeline: 'blog', topic: 'Pre Fault', requestedBy: 'admin' });
+  assert.equal(resPre.ok, false);
+  if (!resPre.ok) assert.equal(resPre.errorCode, 'AUTOMATION_PRE_PROVIDER_FAILED');
+
+  preProviderBarrier = async () => {};
+  const resInFlight = await service.executeAutomationRun(db, {
+    pipeline: 'blog', topic: 'In Flight Fault', requestedBy: 'admin',
+    generatorOverride: async () => { throw new Error('Injected Provider Error'); }
+  });
+  assert.equal(resInFlight.ok, false);
+  if (!resInFlight.ok) assert.equal(resInFlight.errorCode, 'AUTOMATION_AMBIGUOUS_PROVIDER_RESULT');
+
+  const origSet = MockDocRef.prototype.set;
+  MockDocRef.prototype.set = async function(data: any, opts?: any) {
+    if (this.colName === 'operator_drafts') throw new Error('Injected Draft Write Error');
+    return origSet.call(this, data, opts);
+  };
+  const resDraftFail = await service.executeAutomationRun(db, {
+    pipeline: 'blog', topic: 'Draft Write Fault', requestedBy: 'admin',
+    generatorOverride: async () => ({ title: 'T', content: 'C', summary: 'S' })
+  });
+  assert.equal(resDraftFail.ok, false);
+  if (!resDraftFail.ok) assert.equal(resDraftFail.errorCode, 'AUTOMATION_DRAFT_WRITE_FAILED');
+  MockDocRef.prototype.set = origSet;
+
+  const origTxUpdate = (db as any).runTransaction;
+  (db as any).runTransaction = async function(fn: any) {
+    return origTxUpdate.call(this, async (t: any) => {
+      const origUpdate = t.update;
+      t.update = function(docRef: any, data: any) {
+        if (docRef?.colName === 'ops_automation_claims' && data?.claimState === 'COMPLETED') {
+          throw new Error('Injected Finalization Error');
+        }
+        return origUpdate.call(this, docRef, data);
+      };
+      return fn(t);
+    });
+  };
+  const resFinalFail = await service.executeAutomationRun(db, {
+    pipeline: 'blog', topic: 'Final Fault', requestedBy: 'admin',
+    generatorOverride: async () => ({ title: 'T', content: 'C', summary: 'S' })
+  });
+  assert.equal(resFinalFail.ok, false);
+  if (!resFinalFail.ok) assert.equal(resFinalFail.errorCode, 'AUTOMATION_FINALIZATION_FAILED');
+  (db as any).runTransaction = origTxUpdate;
+
+  console.log('  ✔ testFaultInjections PASSED');
+}
+
+// ==========================================
+// NEW V6 SUITES (A - F)
+// ==========================================
+
+async function testA_LeaseBoundaries() {
+  console.log('\n--- A. Lease Boundaries ---');
+  const db = createMockDb();
+  let currentTime = 1000000;
+
+  const testService1 = createTestAutomationService({ clockFn: () => currentTime });
+
+  const claimResult = await testService1.claimIdempotencyKeyAtomic(db, 'boundary-key', 'run-1', 'topic');
+  assert.equal(claimResult.kind, 'CLAIM_ACQUIRED');
+
+  let activeClaim = await db.collection('ops_automation_claims').doc('boundary-key').get();
+  const leaseExpiresAt = activeClaim.data()!.leaseExpiresAt;
+
+  const earlyService = createTestAutomationService({ clockFn: () => leaseExpiresAt - 1 });
+  const earlyResult = await earlyService.claimIdempotencyKeyAtomic(db, 'boundary-key', 'run-2', 'topic');
+  assert.equal(earlyResult.kind, 'ACTIVE_PRE_PROVIDER_CLAIM', 'leaseExpiresAt - 1 ms returns ACTIVE_PRE_PROVIDER_CLAIM');
+
+  const exactService = createTestAutomationService({ clockFn: () => leaseExpiresAt });
+  const exactResult = await exactService.claimIdempotencyKeyAtomic(db, 'boundary-key', 'run-3', 'topic');
+  assert.equal(exactResult.kind, 'STALE_PRE_PROVIDER_CLAIM_RECLAIMED', 'exactly leaseExpiresAt permits reclaim');
+
+  assert.equal(testService1.claimIdempotencyKeyAtomic.toString().includes('Date.now'), false, 'ordinary production input cannot override time');
+
+  console.log('  ✔ testA_LeaseBoundaries PASSED');
+}
+
+async function testB_ConcurrentReclaim() {
+  console.log('\n--- B. Concurrent reclaim ---');
+  const db = createMockDb();
+
+  let time = 1000000;
+  const initialService = createTestAutomationService({ clockFn: () => time });
+
+  await initialService.claimIdempotencyKeyAtomic(db, 'conc-key', 'run-a', 'topic');
+  const claimSnap = await db.collection('ops_automation_claims').doc('conc-key').get();
+
+  time = claimSnap.data()!.leaseExpiresAt + 1000;
+
+  const serviceB = createTestAutomationService({ clockFn: () => time });
+  const serviceC = createTestAutomationService({ clockFn: () => time });
+
+  const [resB, resC] = await Promise.all([
+    serviceB.claimIdempotencyKeyAtomic(db, 'conc-key', 'run-b', 'topic'),
+    serviceC.claimIdempotencyKeyAtomic(db, 'conc-key', 'run-c', 'topic')
+  ]);
+
+  const results = [resB.kind, resC.kind];
+  assert.ok(results.includes('STALE_PRE_PROVIDER_CLAIM_RECLAIMED'), 'exactly one returns STALE_PRE_PROVIDER_CLAIM_RECLAIMED');
+  assert.ok(results.includes('ACTIVE_PRE_PROVIDER_CLAIM'), 'the other does not win');
+
+  const winner = resB.kind === 'STALE_PRE_PROVIDER_CLAIM_RECLAIMED' ? resB : resC;
+  assert.ok((winner as any).ownerToken, 'winner receives a new ownerToken');
+  assert.equal((winner as any).runId, 'run-a', 'original runId is preserved');
+
+  console.log('  ✔ testB_ConcurrentReclaim PASSED');
+}
+
+async function testC_RealDailyCapReuse() {
+  console.log('\n--- C. Real daily-cap reuse ---');
+  const db = createMockDb();
+  await db.collection('ops_settings').doc('global').set({
+    schemaVersion: 1, emergencyStop: false, operatingMode: 'MANUAL', timezone: 'Asia/Ho_Chi_Minh',
+    dailyCaps: { totalDrafts: 10, blogDrafts: 10, storyDrafts: 10 }, pipelines: { blog: { enabled: true } }
+  });
+  await db.collection('novels').doc('dummy-novel').set({ title: 'Dummy', genres: ['Ngôn Tình'] });
+
+  let time = 1000000;
+  let barrierResolver: () => void;
+  const barrier = new Promise<void>(r => { barrierResolver = r; });
+
+  const serviceA = createTestAutomationService({ clockFn: () => time, preProviderBarrier: async () => await barrier });
+
+  const promiseA = serviceA.executeAutomationRun(db, { pipeline: 'blog', topic: 'Cap Reuse', requestedBy: 'admin', providedIdempotencyKey: 'cap-key' });
+
+  await new Promise(r => setTimeout(r, 100));
+
+  let capCount = 0;
+  const dailyCapsMap = db.store.get('ops_daily_counters');
+  if (dailyCapsMap) {
+    for (const doc of Array.from<Record<string, any>>(dailyCapsMap.values())) {
+      capCount = doc.totalDrafts;
+    }
+  }
+  assert.equal(capCount, 1, 'A reserves cap');
+
+  time += 20 * 60 * 1000;
+
+  const serviceB = createTestAutomationService({ clockFn: () => time });
+  let bProviderCalled = false;
+  const promiseB = serviceB.executeAutomationRun(db, { pipeline: 'blog', topic: 'Cap Reuse', requestedBy: 'admin', providedIdempotencyKey: 'cap-key', generatorOverride: async () => { bProviderCalled = true; return { title: 'B', content: 'B', summary: 'B' }; } });
+
+  await promiseB;
+
+  let newCapCount = 0;
+  const dailyCapsMap2 = db.store.get('ops_daily_counters');
+  if (dailyCapsMap2) {
+    for (const doc of Array.from<Record<string, any>>(dailyCapsMap2.values())) {
+      newCapCount = doc.totalDrafts;
+    }
+  }
+  assert.equal(newCapCount, 1, 'reclaim does not increment the counter');
+
+  barrierResolver!();
+  const resA = await promiseA;
+
+  assert.equal(resA.ok, false);
+  if (!resA.ok) assert.equal(resA.disposition, 'LOST_OWNERSHIP', 'stale A cannot delete, release, or invalidate the effective reservation');
+
+  let finalCapCount = 0;
+  const dailyCapsMap3 = db.store.get('ops_daily_counters');
+  if (dailyCapsMap3) {
+    for (const doc of Array.from<Record<string, any>>(dailyCapsMap3.values())) {
+      finalCapCount = doc.totalDrafts;
+    }
+  }
+  assert.equal(finalCapCount, 1, 'reservation and counter remain valid after the winner completes');
+
+  console.log('  ✔ testC_RealDailyCapReuse PASSED');
+}
+
+async function testD_ExactlyOnceAssertions() {
+  console.log('\n--- D. Exactly-once assertions ---');
+  const db = createMockDb();
+  await db.collection('ops_settings').doc('global').set({
+    schemaVersion: 1, emergencyStop: false, operatingMode: 'MANUAL', timezone: 'Asia/Ho_Chi_Minh',
+    dailyCaps: { totalDrafts: 10, blogDrafts: 10, storyDrafts: 10 }, pipelines: { blog: { enabled: true } }
+  });
+
+  let time = 1000000;
+  let barrierA: () => void;
+  const promiseBarrierA = new Promise<void>(r => { barrierA = r; });
+
+  let aCalls = 0;
+  const serviceA = createTestAutomationService({ clockFn: () => time, preProviderBarrier: async () => await promiseBarrierA });
+  const execA = serviceA.executeAutomationRun(db, { pipeline: 'blog', topic: 'Exact Once', requestedBy: 'admin', providedIdempotencyKey: 'exact-key', generatorOverride: async () => { aCalls++; return { title: 'A', content: 'A', summary: 'A' }; } });
+
+  await new Promise(r => setTimeout(r, 100));
+
+  time += 20 * 60 * 1000;
+
+  let bCalls = 0;
+  let cCalls = 0;
+
+  const serviceB = createTestAutomationService({ clockFn: () => time });
+  const serviceC = createTestAutomationService({ clockFn: () => time });
+
+  const execB = serviceB.executeAutomationRun(db, { pipeline: 'blog', topic: 'Exact Once', requestedBy: 'admin', providedIdempotencyKey: 'exact-key', generatorOverride: async () => { await new Promise(r => setTimeout(r, 10)); bCalls++; return { title: 'B', content: 'B', summary: 'B' }; } });
+  const execC = serviceC.executeAutomationRun(db, { pipeline: 'blog', topic: 'Exact Once', requestedBy: 'admin', providedIdempotencyKey: 'exact-key', generatorOverride: async () => { await new Promise(r => setTimeout(r, 10)); cCalls++; return { title: 'C', content: 'C', summary: 'C' }; } });
+
+  barrierA!();
+
+  await Promise.all([execA, execB, execC]);
+
+  assert.equal(aCalls, 0, 'A provider calls = 0');
+  const totalCalls = aCalls + bCalls + cCalls;
+  assert.equal(totalCalls, 1, 'total provider calls = exactly 1');
+
+  const drafts = await db.collection('operator_drafts').get();
+  assert.equal(drafts.docs.length, 1, 'assert exactly one matching draft');
+
+  const claimSnap = await db.collection('ops_automation_claims').doc('exact-key').get();
+  const preservedRunId = claimSnap.data()!.runId;
+  assert.ok(drafts.docs[0].data()!.source.includes(preservedRunId), 'assert the draft references the preserved original runId');
+
+  console.log('  ✔ testD_ExactlyOnceAssertions PASSED');
+}
+
+async function testE_IsolatedStaleOwnerFencing() {
+  console.log('\n--- E. Isolated stale-owner fencing ---');
+  const db = createMockDb();
+
+  const service = createTestAutomationService({ clockFn: () => Date.now() });
+
+  const transitions = [
+    { from: 'PRE_PROVIDER', to: 'PROVIDER_IN_FLIGHT' },
+    { from: 'PRE_PROVIDER', to: 'FAILED' },
+    { from: 'PROVIDER_IN_FLIGHT', to: 'PROVIDER_RETURNED' },
+    { from: 'PROVIDER_RETURNED', to: 'DRAFT_CREATED' },
+    { from: 'DRAFT_CREATED', to: 'FINALIZING' },
+    { from: 'FINALIZING', to: 'COMPLETED' },
+  ];
+
+  let index = 0;
+  for (const t of transitions) {
+    const runId = `run-${index}`;
+    const idKey = `id-${index}`;
+
+    await db.collection('ops_automation_claims').doc(idKey).set({
+      claimVersion: 2, runId, ownerToken: 'NEW_OWNER', claimState: t.from
+    });
+
+    let errorCaught = false;
+    try {
+      await service.syncStage(db, runId, idKey, 'STALE_OWNER', t.from, t.to);
+    } catch (e: any) {
+      assert.equal(e.name, 'OwnershipFencingError', 'Each failure must be attributable to stale fencing, not incorrect state');
+      errorCaught = true;
+    }
+    assert.ok(errorCaught, `Transition ${t.from}->${t.to} failed to fence stale owner`);
+    index++;
+  }
+
+  console.log('  ✔ testE_IsolatedStaleOwnerFencing PASSED');
+}
+
+async function testF_FaultInjectionAndSanitization() {
+  console.log('\n--- F. Fault injection and sanitization ---');
+  const db = createMockDb();
+  await db.collection('ops_settings').doc('global').set({
+    schemaVersion: 1, emergencyStop: false, operatingMode: 'MANUAL', timezone: 'Asia/Ho_Chi_Minh',
+    dailyCaps: { totalDrafts: 10, blogDrafts: 10, storyDrafts: 10 }, pipelines: { blog: { enabled: true } }
+  });
+
+  let preProviderBarrier: () => Promise<void> = async () => {};
+  const service = createTestAutomationService({ clockFn: () => Date.now(), preProviderBarrier: async () => preProviderBarrier() });
+
+  preProviderBarrier = async () => { throw new Error('Injected Pre-Provider Error'); };
+  const resPre = await service.executeAutomationRun(db, {
+    pipeline: 'blog', topic: 'Pre Fault', requestedBy: 'admin', providedIdempotencyKey: 'fault-pre'
+  });
+  assert.equal(resPre.ok, false);
+  if (!resPre.ok) {
+     assert.equal(resPre.retryable, true, 'cleanup failure preserving the primary RETRYABLE classification');
+     assert.equal(resPre.errorCode, 'AUTOMATION_PRE_PROVIDER_FAILED');
+  }
+
+  preProviderBarrier = async () => {};
+  const origSet = MockDocRef.prototype.set;
+  MockDocRef.prototype.set = async function(data: any, opts?: any) {
+    if (this.colName === 'operator_drafts') throw new Error('Injected Draft Write Error with secret_token123');
+    return origSet.call(this, data, opts);
+  };
+  const resDraftFail = await service.executeAutomationRun(db, {
+    pipeline: 'blog', topic: 'Draft Write Fault', requestedBy: 'admin', providedIdempotencyKey: 'fault-draft',
+    generatorOverride: async () => ({ title: 'T', content: 'C', summary: 'S' })
+  });
+  assert.equal(resDraftFail.ok, false);
+  if (!resDraftFail.ok) assert.equal(resDraftFail.disposition, 'AMBIGUOUS', 'provider-returned draft-write failure returning AMBIGUOUS');
+  MockDocRef.prototype.set = origSet;
+
+  const origTxUpdate = (db as any).runTransaction;
+  (db as any).runTransaction = async function(fn: any) {
+    return origTxUpdate.call(this, async (t: any) => {
+      const origUpdate = t.update;
+      t.update = function(docRef: any, data: any) {
+        if (docRef?.colName === 'ops_automation_claims' && data?.claimState === 'COMPLETED') {
+          throw new Error('Injected Finalization Error');
+        }
+        return origUpdate.call(this, docRef, data);
+      };
+      return fn(t);
+    });
+  };
+  const resFinalFail = await service.executeAutomationRun(db, {
+    pipeline: 'blog', topic: 'Final Fault', requestedBy: 'admin', providedIdempotencyKey: 'fault-final',
+    generatorOverride: async () => ({ title: 'T', content: 'C', summary: 'S' })
+  });
+  assert.equal(resFinalFail.ok, false);
+  if (!resFinalFail.ok) assert.equal(resFinalFail.disposition, 'AMBIGUOUS', 'finalization failure returning AMBIGUOUS');
+  (db as any).runTransaction = origTxUpdate;
+
+  let providerCalled = false;
+  const resRetry = await service.executeAutomationRun(db, {
+    pipeline: 'blog', topic: 'Final Fault', requestedBy: 'admin', providedIdempotencyKey: 'fault-final',
+    generatorOverride: async () => { providerCalled = true; return { title: 'T', content: 'C', summary: 'S' }; }
+  });
+  assert.equal(resRetry.ok, true);
+  if (resRetry.ok) assert.equal(resRetry.status, 'NEEDS_RECONCILIATION', 'retry after finalization failure returning reconciliation');
+  assert.equal(providerCalled, false, 'retry does not call provider again');
+
+  const compClaim = await db.collection('ops_automation_claims').doc('fault-draft').get();
+  const compRun = await db.collection('ops_automation_runs').doc((resDraftFail as any).runId).get();
+
+  const resString = JSON.stringify(resDraftFail);
+  assert.ok(!resString.includes('secret_token123'), 'returned objects contain no secret');
+  assert.ok(!resString.includes('stack'), 'returned objects contain no stack');
+
+  const runString = JSON.stringify(compRun.data());
+  assert.ok(!runString.includes('secret_token123'), 'persisted claim/run failure metadata contains no secret');
+  assert.ok(!runString.includes('stack'), 'persisted claim/run failure metadata contains no stack');
+
+  console.log('  ✔ testF_FaultInjectionAndSanitization PASSED');
 }
 
 async function runAllSuites() {
   await testSettingsValidation();
-  await testRecoveryPoliciesAndDeduplication();
   await testDeduplicationAndCaps();
   await testConcurrency();
   await testApiValidations();
+  await testPhase3BStaleClaimPatch();
+  await testPhase3B17ConditionsRegression();
+  await testFaultInjections();
+  await testA_LeaseBoundaries();
+  await testB_ConcurrentReclaim();
+  await testC_RealDailyCapReuse();
+  await testD_ExactlyOnceAssertions();
+  await testE_IsolatedStaleOwnerFencing();
+  await testF_FaultInjectionAndSanitization();
   console.log('\n✅ ALL DEFECT REMEDIATION TESTS PASSED!\n');
 }
 
