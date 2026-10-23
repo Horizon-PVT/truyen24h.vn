@@ -2,13 +2,15 @@
  * Unified AI Provider Service
  *
  * Supports multi-model switching between:
- *   1. Google Gemini (@google/genai)
- *   2. DeepSeek (DeepSeek-V3 / DeepSeek-R1) via OpenAI-compatible API
+ *   1. BytePlus ModelArk (DeepSeek-V4.1-Flash, GLM-5.3-Flash, etc.)
+ *   2. DeepSeek Official (DeepSeek-V3 / DeepSeek-R1) via OpenAI-compatible API
  *   3. SiliconFlow (Qwen 2.5 / DeepSeek) via OpenAI-compatible API
- *   4. OpenRouter (DeepSeek Free / Llama / etc.) via OpenAI-compatible API
+ *   4. OpenRouter (Free tiers) via OpenAI-compatible API
+ *   5. Google Gemini (@google/genai)
  *
  * Configured via environment variables:
- *   AI_PROVIDER = 'gemini' | 'deepseek' | 'siliconflow' | 'openrouter' (default: 'gemini')
+ *   AI_PROVIDER = 'byteplus' | 'deepseek' | 'siliconflow' | 'openrouter' | 'gemini'
+ *   BYTEPLUS_API_KEY = '...'
  *   DEEPSEEK_API_KEY = 'sk-...'
  *   SILICONFLOW_API_KEY = 'sk-...'
  *   OPENROUTER_API_KEY = 'sk-...'
@@ -29,9 +31,12 @@ export interface GenerateTextResult {
   model: string;
 }
 
-export function getActiveProvider(): 'gemini' | 'deepseek' | 'siliconflow' | 'openrouter' {
+export function getActiveProvider(): 'byteplus' | 'deepseek' | 'siliconflow' | 'openrouter' | 'gemini' {
   const p = (process.env.AI_PROVIDER || '').toLowerCase().trim();
+  if (p === 'byteplus' || p === 'ark') return 'byteplus';
   if (p === 'deepseek' || p === 'siliconflow' || p === 'openrouter') return p;
+  // If BYTEPLUS_API_KEY is present and no explicit provider is set, prefer byteplus
+  if (process.env.BYTEPLUS_API_KEY || process.env.ARK_API_KEY) return 'byteplus';
   return 'gemini';
 }
 
@@ -104,7 +109,28 @@ async function callOpenAICompatible(opts: {
 export async function generateAIText(options: GenerateTextOptions): Promise<GenerateTextResult> {
   const provider = getActiveProvider();
 
-  // 1. DeepSeek Official Provider
+  // 1. BytePlus ModelArk Provider (ByteDance Cloud - DeepSeek V4.1 / GLM 5.3)
+  if (provider === 'byteplus') {
+    const apiKey = process.env.BYTEPLUS_API_KEY || process.env.ARK_API_KEY;
+    if (!apiKey) {
+      throw new Error('BYTEPLUS_API_KEY is not set in environment.');
+    }
+    const baseUrl = process.env.BYTEPLUS_BASE_URL || 'https://ark.ap-southeast.bytepluses.com/api/v3';
+    const model = options.modelOverride || process.env.BYTEPLUS_MODEL || 'deepseek-v4-1-flash-261017';
+    const text = await callOpenAICompatible({
+      baseUrl,
+      apiKey,
+      model,
+      prompt: options.prompt,
+      systemInstruction: options.systemInstruction,
+      temperature: options.temperature,
+      maxTokens: options.maxTokens,
+      jsonMode: options.jsonMode,
+    });
+    return { text, provider: 'byteplus', model };
+  }
+
+  // 2. DeepSeek Official Provider
   if (provider === 'deepseek') {
     const apiKey = process.env.DEEPSEEK_API_KEY;
     if (!apiKey) {
@@ -125,7 +151,7 @@ export async function generateAIText(options: GenerateTextOptions): Promise<Gene
     return { text, provider: 'deepseek', model };
   }
 
-  // 2. SiliconFlow Provider (Qwen 2.5 / DeepSeek V3 / R1)
+  // 3. SiliconFlow Provider (Qwen 2.5 / DeepSeek V3 / R1)
   if (provider === 'siliconflow') {
     const apiKey = process.env.SILICONFLOW_API_KEY;
     if (!apiKey) {
@@ -146,7 +172,7 @@ export async function generateAIText(options: GenerateTextOptions): Promise<Gene
     return { text, provider: 'siliconflow', model };
   }
 
-  // 3. OpenRouter Provider (Free DeepSeek-chat / DeepSeek-R1 tiers)
+  // 4. OpenRouter Provider (Free DeepSeek-chat / DeepSeek-R1 tiers)
   if (provider === 'openrouter') {
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
@@ -171,7 +197,7 @@ export async function generateAIText(options: GenerateTextOptions): Promise<Gene
     return { text, provider: 'openrouter', model };
   }
 
-  // 4. Google Gemini Provider (Default)
+  // 5. Google Gemini Provider (Default)
   const geminiKey = process.env.GEMINI_API_KEY;
   if (!geminiKey) {
     throw new Error('GEMINI_API_KEY is not set in environment.');
