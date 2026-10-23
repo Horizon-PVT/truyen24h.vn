@@ -46,6 +46,23 @@ function getBearerToken(request: Request): string | null {
   return parts[1];
 }
 
+export async function authorizeBot(req: NextRequest): Promise<AuthResult> {
+  const bearerToken = getBearerToken(req);
+  const headerToken = req.headers.get('x-bot-token') || req.headers.get('x-admin-token');
+  const provided = bearerToken || headerToken;
+
+  const validTokens = [
+    process.env.ADMIN_API_TOKEN,
+    process.env.BOT_API_KEY,
+  ].filter(Boolean);
+
+  if (provided && validTokens.includes(provided)) {
+    return { ok: true, via: 'token' };
+  }
+
+  return authorizeAdmin(req);
+}
+
 export async function authorizeAdmin(req: NextRequest): Promise<AuthResult> {
   const expectedMachineToken = process.env.ADMIN_API_TOKEN;
   const headerMachineToken = req.headers.get('x-admin-token');

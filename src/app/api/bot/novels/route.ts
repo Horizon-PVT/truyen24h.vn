@@ -1,0 +1,147 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { authorizeBot } from '@/lib/apiAuth';
+import { adminDb, serverTimestamp } from '@/lib/firebaseAdmin';
+import { getSiteUrl } from '@/lib/site';
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
+function slugify(input: string): string {
+  return input
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80);
+}
+
+// GET /api/bot/novels - List & search novels
+export async function GET(req: NextRequest) {
+  const auth = await authorizeBot(req);
+  if (!auth.ok) {
+    return NextResponse.json({ ok: false, error: auth.reason || 'Unauthorized' }, { status: auth.status || 401 });
+  }
+
+  try {
+    const { searchParams } = new URL(req.url);
+    const q = (searchParams.get('q') || '').toLowerCase().trim();
+    const genre = (searchParams.get('genre') || '').toLowerCase().trim();
+    const limitCount = Math.min(parseInt(searchParams.get('limit') || '20', 10), 100);
+
+    const db = adminDb();
+    let queryRef: FirebaseFirestore.Query = db.collection('novels').orderBy('updatedAt', 'desc').limit(limitCount);
+
+    const snapshot = await queryRef.get();
+    let novels = snapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        title: data.title || '',
+        author: data.author || '',
+        description: data.description || '',
+        genres: data.genres || [],
+        totalChapters: data.totalChapters || 0,
+        views: data.views || 0,
+        rating: data.rating || 5,
+        status: data.status || 'ongoing',
+        coverUrl: data.coverUrl || '',
+        updatedAt: data.updatedAt?.toDate?.()?.toISOString() || null,
+        url: `${getSiteUrl()}/truyen/${doc.id}`,
+      };
+    });
+
+    if (q) {
+      novels = novels.filter(n => n.title.toLowerCase().includes(q) || n.author.toLowerCase().includes(q));
+    }
+
+    if (genre) {
+      novels = novels.filter(n => (n.genres as string[]).some(g => g.toLowerCase().includes(genre)));
+    }
+
+    return NextResponse.json({
+      ok: true,
+      total: novels.length,
+      data: novels,
+    });
+  } catch (error: any) {
+    console.error('Bot API novels GET error:', error);
+    return NextResponse.json({ ok: false, error: error.message || 'Internal error' }, { status: 500 });
+  }
+}
+
+// POST /api/bot/novels - Create or update a novel
+export async function POST(req: NextRequest) {
+  const auth = await authorizeBot(req);
+  if (!auth.ok) {
+    return NextResponse.json({ ok: false, error: auth.reason || 'Unauthorized' }, { status: auth.status || 401 });
+  }
+
+  try {
+    const body = await req.json();
+    const {
+      title,
+      author,
+      description,
+      genres = ['Khác'],
+      coverUrl = '/logo.jpg',
+      status = 'ongoing',
+      tags = [],
+      slug: explicitSlug,
+    } = body;
+
+    if (!title || typeof title !== 'string') {
+      return NextResponse.json({ ok: false, error: 'Thiếu hoặc sai trường title' }, { status: 400 });
+    }
+
+    const novelSlug = explicitSlug || slugify(title);
+    if (!novelSlug) {
+      return NextResponse.json({ ok: false, error: 'Không thể tạo slug từ title' }, { status: 400 });
+    }
+
+    const db = adminDb();
+    const novelRef = db.collection('novels').doc(novelSlug);
+    const existing = await novelRef.get();
+
+    const novelData: Record<string, any> = {
+      title: title.trim(),
+      author: (author || 'Sưu tầm').trim(),
+      description: (description || title).trim(),
+      genres: Array.isArray(genres) ? genres : [genres],
+      coverUrl: coverUrl || '/logo.jpg',
+      status: status === 'completed' ? 'completed' : 'ongoing',
+      tags: Array.isArray(tags) ? tags : [],
+      isPublic: true,
+      approvalStatus: 'approved',
+      updatedAt: serverTimestamp(),
+    };
+
+    if (!existing.exists) {
+      novelData.createdAt = serverTimestamp();
+      novelData.totalChapters = 0;
+      novelData.views = 0;
+      novelData.rating = 5.0;
+      novelData.bookmarks = 0;
+      novelData.authorId = 'bot-importer';
+      await novelRef.set(novelData);
+    } else {
+      await novelRef.set(novelData, { merge: true });
+    }
+
+    return NextResponse.json({
+      ok: true,
+      novel: {
+        id: novelSlug,
+        slug: novelSlug,
+        title: novelData.title,
+        url: `${getSiteUrl()}/truyen/${novelSlug}`,
+        isCreated: !existing.exists,
+      },
+    });
+  } catch (error: any) {
+    console.error('Bot API novels POST error:', error);
+    return NextResponse.json({ ok: false, error: error.message || 'Internal error' }, { status: 500 });
+  }
+}
