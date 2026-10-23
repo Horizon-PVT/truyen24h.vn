@@ -5,11 +5,13 @@
  *   1. Google Gemini (@google/genai)
  *   2. DeepSeek (DeepSeek-V3 / DeepSeek-R1) via OpenAI-compatible API
  *   3. SiliconFlow (Qwen 2.5 / DeepSeek) via OpenAI-compatible API
+ *   4. OpenRouter (DeepSeek Free / Llama / etc.) via OpenAI-compatible API
  *
  * Configured via environment variables:
- *   AI_PROVIDER = 'gemini' | 'deepseek' | 'siliconflow' (default: 'gemini')
+ *   AI_PROVIDER = 'gemini' | 'deepseek' | 'siliconflow' | 'openrouter' (default: 'gemini')
  *   DEEPSEEK_API_KEY = 'sk-...'
  *   SILICONFLOW_API_KEY = 'sk-...'
+ *   OPENROUTER_API_KEY = 'sk-...'
  */
 
 export interface GenerateTextOptions {
@@ -27,9 +29,9 @@ export interface GenerateTextResult {
   model: string;
 }
 
-export function getActiveProvider(): 'gemini' | 'deepseek' | 'siliconflow' {
+export function getActiveProvider(): 'gemini' | 'deepseek' | 'siliconflow' | 'openrouter' {
   const p = (process.env.AI_PROVIDER || '').toLowerCase().trim();
-  if (p === 'deepseek' || p === 'siliconflow') return p;
+  if (p === 'deepseek' || p === 'siliconflow' || p === 'openrouter') return p;
   return 'gemini';
 }
 
@@ -45,6 +47,7 @@ async function callOpenAICompatible(opts: {
   temperature?: number;
   maxTokens?: number;
   jsonMode?: boolean;
+  extraHeaders?: Record<string, string>;
 }): Promise<string> {
   const messages: { role: string; content: string }[] = [];
 
@@ -68,13 +71,19 @@ async function callOpenAICompatible(opts: {
     body.response_format = { type: 'json_object' };
   }
 
-  const endpoint = `${opts.baseUrl.replace(/\/+$/, '')}/chat/completions`;
+  const endpoint = opts.baseUrl.endsWith('/')
+    ? `${opts.baseUrl}chat/completions`
+    : `${opts.baseUrl}/chat/completions`;
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${opts.apiKey}`,
+    ...(opts.extraHeaders || {}),
+  };
+
   const res = await fetch(endpoint, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${opts.apiKey}`,
-    },
+    headers,
     body: JSON.stringify(body),
   });
 
@@ -95,13 +104,13 @@ async function callOpenAICompatible(opts: {
 export async function generateAIText(options: GenerateTextOptions): Promise<GenerateTextResult> {
   const provider = getActiveProvider();
 
-  // 1. DeepSeek Provider
+  // 1. DeepSeek Official Provider
   if (provider === 'deepseek') {
     const apiKey = process.env.DEEPSEEK_API_KEY;
     if (!apiKey) {
       throw new Error('DEEPSEEK_API_KEY is not set in environment.');
     }
-    const baseUrl = process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1';
+    const baseUrl = process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com';
     const model = options.modelOverride || 'deepseek-chat';
     const text = await callOpenAICompatible({
       baseUrl,
@@ -116,7 +125,7 @@ export async function generateAIText(options: GenerateTextOptions): Promise<Gene
     return { text, provider: 'deepseek', model };
   }
 
-  // 2. SiliconFlow Provider (Qwen 2.5 / DeepSeek)
+  // 2. SiliconFlow Provider (Qwen 2.5 / DeepSeek V3 / R1)
   if (provider === 'siliconflow') {
     const apiKey = process.env.SILICONFLOW_API_KEY;
     if (!apiKey) {
@@ -137,7 +146,32 @@ export async function generateAIText(options: GenerateTextOptions): Promise<Gene
     return { text, provider: 'siliconflow', model };
   }
 
-  // 3. Google Gemini Provider (Default)
+  // 3. OpenRouter Provider (Free DeepSeek-chat / DeepSeek-R1 tiers)
+  if (provider === 'openrouter') {
+    const apiKey = process.env.OPENROUTER_API_KEY;
+    if (!apiKey) {
+      throw new Error('OPENROUTER_API_KEY is not set in environment.');
+    }
+    const baseUrl = process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1';
+    const model = options.modelOverride || 'deepseek/deepseek-chat:free';
+    const text = await callOpenAICompatible({
+      baseUrl,
+      apiKey,
+      model,
+      prompt: options.prompt,
+      systemInstruction: options.systemInstruction,
+      temperature: options.temperature,
+      maxTokens: options.maxTokens,
+      jsonMode: options.jsonMode,
+      extraHeaders: {
+        'HTTP-Referer': 'https://truyen24h.vn',
+        'X-Title': 'Truyen24h.vn',
+      },
+    });
+    return { text, provider: 'openrouter', model };
+  }
+
+  // 4. Google Gemini Provider (Default)
   const geminiKey = process.env.GEMINI_API_KEY;
   if (!geminiKey) {
     throw new Error('GEMINI_API_KEY is not set in environment.');
@@ -165,7 +199,7 @@ export async function generateAIText(options: GenerateTextOptions): Promise<Gene
   });
 
   return {
-    text: (response.text || '').trim(),
+    text: response.text || '',
     provider: 'gemini',
     model,
   };
