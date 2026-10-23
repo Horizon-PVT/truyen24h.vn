@@ -61,7 +61,8 @@ def push_chapter_to_truyen24h(novel_id: str, chapter_num: int, raw_text: str, no
         "novelId": novel_id,
         "novelTitle": novel_title,
         "chapterNumber": chapter_num,
-        "rawContent": raw_text,
+        "raw": raw_text,
+        "persist": False,
     }
 
     try:
