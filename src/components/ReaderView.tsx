@@ -1,4 +1,5 @@
-import { ArrowLeft, ArrowRight, Settings, Menu, X, ChevronLeft, ChevronRight, List, AlertTriangle, Volume2, Loader2, Play, Pause, Crown, Lock, Unlock, MessageSquare, Send } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Settings, Menu, X, ChevronLeft, ChevronRight, List, AlertTriangle, Volume2, Loader2, Play, Pause, Crown, Lock, Unlock, MessageSquare, Send, Zap, Coins } from 'lucide-react';
+import Link from 'next/link';
 import { useRef } from 'react';
 import { Novel, Chapter, UserProfile, InlineComment } from '../types';
 import { useState, useEffect } from 'react';
@@ -610,21 +611,48 @@ export default function ReaderView({ novel, chapter, onBack, onChapterChange, on
         </div>
 
         {isChapterLocked ? (
-          <div className="flex flex-col items-center justify-center p-12 bg-surface border-2 border-yellow-500/20 rounded-[40px] shadow-2xl max-w-lg mx-auto text-center">
-            <Lock className="size-16 text-yellow-500 mb-6" />
-            <h3 className="text-3xl font-black uppercase tracking-tighter mb-4 text-text-main">Chương VIP</h3>
-            <p className="text-muted font-medium mb-8">
-              Chương này thuộc quyền sở hữu đặc biệt. Bạn cần thanh toán <span className="text-primary font-black text-lg">{chapter.price || 50} Xu</span> để mở khóa.
+          <div className="flex flex-col items-center justify-center p-8 md:p-12 bg-surface border-2 border-yellow-500/20 rounded-[40px] shadow-2xl max-w-lg mx-auto text-center">
+            <div className="p-4 bg-yellow-500/10 rounded-3xl mb-6">
+              <Lock className="size-12 text-yellow-500" />
+            </div>
+            <h3 className="text-2xl md:text-3xl font-black uppercase tracking-tighter mb-2 text-text-main">Chương VIP Bản Quyền</h3>
+            <p className="text-muted font-medium mb-4 text-sm">
+              Chương này thuộc quyền sở hữu đặc biệt. Cần <span className="text-primary font-black text-base">{chapter.price || 50} Xu</span> để mở khóa.
             </p>
-            <button 
-              onClick={handleUnlockChapter}
-              disabled={isUnlocking}
-              className="w-full py-4 bg-gradient-to-r from-yellow-500 to-orange-500 text-white rounded-full font-black text-xs uppercase tracking-widest shadow-xl hover:opacity-90 transition-all flex items-center justify-center gap-2"
-            >
-              {isUnlocking ? <Loader2 className="size-5 animate-spin" /> : <Unlock className="size-5" />}
-              <span>{isUnlocking ? 'Đang giao dịch...' : 'Mở khóa ngay'}</span>
-            </button>
-            <p className="text-[10px] text-muted mt-6 font-bold uppercase tracking-widest opacity-50">Secure by PayOS</p>
+
+            <div className="flex items-center gap-2 mb-6 px-4 py-2 bg-yellow-500/10 border border-yellow-500/20 rounded-full text-xs font-bold text-yellow-600 dark:text-yellow-400">
+              <Coins className="size-4" />
+              <span>Số dư của bạn: <strong className="text-primary font-black">{userProfile?.coins || 0} Xu</strong></span>
+            </div>
+
+            {(userProfile?.coins || 0) < (chapter.price || 50) ? (
+              <div className="w-full space-y-3">
+                <Link
+                  href="/vip"
+                  className="w-full py-4 bg-gradient-to-r from-emerald-500 to-green-600 text-white rounded-full font-black text-xs uppercase tracking-widest shadow-xl hover:opacity-95 hover:scale-[1.01] transition-all flex items-center justify-center gap-2"
+                >
+                  <Zap className="size-5" />
+                  <span>Nạp Xu Siêu Tốc (Quét VietQR PayOS)</span>
+                </Link>
+                <Link
+                  href="/vip"
+                  className="w-full py-3 bg-surface border border-yellow-500/40 text-yellow-600 dark:text-yellow-400 hover:bg-yellow-500/10 rounded-full font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2"
+                >
+                  <Crown className="size-4" />
+                  <span>Đăng ký VIP Trọn Gói (Đọc Thả Ga)</span>
+                </Link>
+              </div>
+            ) : (
+              <button 
+                onClick={handleUnlockChapter}
+                disabled={isUnlocking}
+                className="w-full py-4 bg-gradient-to-r from-yellow-500 to-orange-500 text-white rounded-full font-black text-xs uppercase tracking-widest shadow-xl hover:opacity-90 transition-all flex items-center justify-center gap-2"
+              >
+                {isUnlocking ? <Loader2 className="size-5 animate-spin" /> : <Unlock className="size-5" />}
+                <span>{isUnlocking ? 'Đang giao dịch...' : 'Mở khóa ngay'}</span>
+              </button>
+            )}
+            <p className="text-[10px] text-muted mt-6 font-bold uppercase tracking-widest opacity-50">Cổng thanh toán tự động VietQR PayOS</p>
           </div>
         ) : (
           <div 

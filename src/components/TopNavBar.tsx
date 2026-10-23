@@ -1,7 +1,7 @@
 "use client";
-import { Target, Search, ChevronDown, Menu, BookMarked, LogIn, LogOut, Sun, Moon, User as UserIcon, Coins, Sparkles, Trophy, Zap, Crown, BookPlus, Bell } from 'lucide-react';
+import { Target, Search, ChevronDown, Loader2, Menu, BookMarked, LogIn, LogOut, Sun, Moon, User as UserIcon, Coins, Sparkles, Trophy, Zap, Crown, BookPlus, Bell } from 'lucide-react';
 import { GENRES } from '../constants';
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { User } from 'firebase/auth';
 import ProfileEditModal from './ProfileEditModal';
 import CheckInModal from './CheckInModal';
@@ -41,6 +41,50 @@ export default function TopNavBar({
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [showCheckInModal, setShowCheckInModal] = useState(false);
   const [showMissionsModal, setShowMissionsModal] = useState(false);
+  const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [showSearchDropdown, setShowSearchDropdown] = useState(false);
+  const searchContainerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const term = searchValue.trim().toLowerCase();
+    if (term.length < 2) {
+      setSearchResults([]);
+      setShowSearchDropdown(false);
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      setIsSearching(true);
+      try {
+        const { collection, getDocs, limit, query } = await import('firebase/firestore');
+        const { db } = await import('../firebase');
+        const snap = await getDocs(query(collection(db, 'novels'), limit(50)));
+        const matches = snap.docs
+          .map(d => ({ id: d.id, ...d.data() } as any))
+          .filter(n => n.title?.toLowerCase().includes(term) || n.author?.toLowerCase().includes(term))
+          .slice(0, 5);
+        setSearchResults(matches);
+        setShowSearchDropdown(matches.length > 0);
+      } catch (err) {
+        console.error('Instant search error:', err);
+      } finally {
+        setIsSearching(false);
+      }
+    }, 250);
+
+    return () => clearTimeout(timer);
+  }, [searchValue]);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (searchContainerRef.current && !searchContainerRef.current.contains(e.target as Node)) {
+        setShowSearchDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   // Use shared AuthContext instead of duplicate listener
   const { userProfile, isAdminUser } = useAuth();
@@ -142,16 +186,57 @@ export default function TopNavBar({
         </div>
 
         <div className="flex items-center gap-3 shrink-0">
-          <form onSubmit={handleSearchSubmit} className="hidden xl:flex items-center bg-background-light rounded-full px-4 py-2 border border-accent/10 focus-within:border-primary/50 focus-within:bg-surface transition-all w-56 group">
-            <Search className="size-4 text-muted group-focus-within:text-primary mr-2" />
-            <input 
-              type="text" 
-              value={searchValue}
-              onChange={(e) => setSearchValue(e.target.value)}
-              placeholder="Tìm kiếm..." 
-              className="bg-transparent border-none outline-none text-xs w-full placeholder:text-muted"
-            />
-          </form>
+          <div ref={searchContainerRef} className="relative hidden xl:block">
+            <form onSubmit={handleSearchSubmit} className="flex items-center bg-background-light rounded-full px-4 py-2 border border-accent/10 focus-within:border-primary/50 focus-within:bg-surface transition-all w-60 group">
+              <Search className="size-4 text-muted group-focus-within:text-primary mr-2 shrink-0" />
+              <input 
+                type="text" 
+                value={searchValue}
+                onChange={(e) => setSearchValue(e.target.value)}
+                onFocus={() => { if (searchResults.length > 0) setShowSearchDropdown(true); }}
+                placeholder="Tìm truyện, tác giả..." 
+                className="bg-transparent border-none outline-none text-xs w-full placeholder:text-muted"
+              />
+              {isSearching && <Loader2 className="size-3.5 text-primary animate-spin shrink-0" />}
+            </form>
+
+            {showSearchDropdown && searchResults.length > 0 && (
+              <div 
+                className="absolute top-full left-0 right-0 mt-2 bg-surface rounded-2xl shadow-2xl border border-accent/10 p-3 z-50 animate-in fade-in slide-in-from-top-2 duration-150 divide-y divide-accent/5 w-72"
+              >
+                {searchResults.map((novel) => (
+                  <Link
+                    key={novel.id}
+                    href={`/truyen/${novel.id}`}
+                    onClick={() => {
+                      setShowSearchDropdown(false);
+                      setSearchValue('');
+                    }}
+                    className="flex items-center gap-3 p-2 hover:bg-primary/5 rounded-xl transition-colors group cursor-pointer"
+                  >
+                    <div className="w-9 h-12 rounded-lg overflow-hidden shrink-0 bg-background-light">
+                      <img 
+                        src={novel.coverUrl || '/logo.jpg'} 
+                        alt={novel.title} 
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform" 
+                      />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <h4 className="text-xs font-bold text-text-main truncate group-hover:text-primary transition-colors">{novel.title}</h4>
+                      <p className="text-[10px] text-muted truncate">{novel.author || 'Đang cập nhật'}</p>
+                    </div>
+                  </Link>
+                ))}
+                <button
+                  type="button"
+                  onClick={handleSearchSubmit}
+                  className="w-full text-center py-2 text-[10px] font-black uppercase tracking-wider text-primary hover:underline pt-2 block"
+                >
+                  Xem tất cả kết quả →
+                </button>
+              </div>
+            )}
+          </div>
           
           <div className="h-8 w-[1px] bg-accent/10 mx-1 hidden md:block"></div>
 
