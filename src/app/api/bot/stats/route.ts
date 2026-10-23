@@ -26,11 +26,14 @@ export async function GET(req: NextRequest) {
       totalChapters = chaptersSnap.data().count;
     } catch {
       // Fallback to client SDK if service account is not yet loaded on VPS
-      const { db } = await import('@/firebase');
-      const { collection, getCountFromServer } = await import('firebase/firestore');
-      const novelsSnap = await getCountFromServer(collection(db, 'novels'));
-      totalNovels = novelsSnap.data().count;
-      totalChapters = 0;
+      try {
+        const { db } = await import('@/firebase');
+        const { collection, getDocs, limit, query } = await import('firebase/firestore');
+        const novelsSnap = await getDocs(query(collection(db, 'novels'), limit(200)));
+        totalNovels = novelsSnap.size;
+      } catch (err: any) {
+        console.error('Client SDK stats fallback error:', err?.message || err);
+      }
     }
 
     return NextResponse.json({
