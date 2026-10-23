@@ -360,6 +360,28 @@ export default function ReaderView({ novel, chapter, onBack, onChapterChange, on
   const prevChapter = currentIndex > 0 ? chapters[currentIndex - 1] : null;
   const nextChapter = currentIndex >= 0 && currentIndex < chapters.length - 1 ? chapters[currentIndex + 1] : null;
 
+  // Desktop UX: Navigate chapters using Left/Right Arrow keys or A/D
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const activeEl = document.activeElement;
+      if (activeEl && ['INPUT', 'TEXTAREA', 'SELECT'].includes(activeEl.tagName)) {
+        return;
+      }
+      if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') {
+        if (prevChapter) {
+          onChapterChange(prevChapter);
+        }
+      } else if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') {
+        if (nextChapter) {
+          onChapterChange(nextChapter);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [prevChapter, nextChapter, onChapterChange]);
+
   return (
     <div 
       className={`min-h-screen transition-colors duration-500 ${themes[theme]} ${fonts[fontFamily]}`}
