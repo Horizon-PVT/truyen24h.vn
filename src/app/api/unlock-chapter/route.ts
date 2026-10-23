@@ -1,100 +1,114 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { initializeApp, getApps } from 'firebase/app';
-import { getFirestore, doc, getDoc, writeBatch, collection, serverTimestamp, increment } from 'firebase/firestore';
-import { adminDb, serverTimestamp as adminTimestamp } from '@/lib/firebaseAdmin';
-
-
-const firebaseConfig = {
-  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
-  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
-  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
-  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
-  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
-};
-
-const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
-const db = getFirestore(app);
-
 /**
  * POST /api/unlock-chapter
- * Server-side endpoint for unlocking VIP chapters
- * This prevents client-side coin manipulation
+ * Server-side endpoint for unlocking VIP chapters with atomic balance deduction.
  */
+import { NextRequest, NextResponse } from 'next/server';
+import { adminDb, serverTimestamp as adminTimestamp, FieldValue } from '@/lib/firebaseAdmin';
+import { requireFirebaseUser } from '@/lib/apiAuth';
+
+export const runtime = 'nodejs';
+
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
-    const { buyerId, novelId, chapterId, chapterPrice, authorId } = body;
+    const auth = await requireFirebaseUser(request);
+    if (!auth.ok) {
+      return auth.response;
+    }
+
+    const buyerId = auth.user.uid;
+    const body = await request.json().catch(() => ({}));
+    const { novelId, chapterId, chapterPrice, authorId } = body;
 
     // Validate required fields
-    if (!buyerId || !novelId || !chapterId || !authorId) {
+    if (!novelId || !chapterId || !authorId) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
 
-    const price = Number(chapterPrice) || 50;
+    const price = Math.max(1, Number(chapterPrice) || 50);
+    const db = adminDb();
 
-    // 1. Verify buyer exists and has enough coins
-    const buyerDoc = await getDoc(doc(db, 'users', buyerId));
-    if (!buyerDoc.exists()) {
-      return NextResponse.json({ error: 'User not found' }, { status: 404 });
-    }
+    const buyerRef = db.collection('users').doc(buyerId);
+    const chapterRef = db.doc(`novels/${novelId}/chapters/${chapterId}`);
 
-    const buyerData = buyerDoc.data();
-    const currentCoins = buyerData.coins || 0;
+    const result = await db.runTransaction(async (tx) => {
+      const [buyerSnap, chapterSnap] = await Promise.all([
+        tx.get(buyerRef),
+        tx.get(chapterRef),
+      ]);
 
-    if (currentCoins < price) {
-      return NextResponse.json({ error: 'Insufficient coins', currentCoins, required: price }, { status: 400 });
-    }
+      if (!buyerSnap.exists) {
+        throw new Error('User not found');
+      }
+      if (!chapterSnap.exists) {
+        throw new Error('Chapter not found');
+      }
 
-    // 2. Check if already unlocked
-    const unlockedChapters: string[] = buyerData.unlockedChapters || [];
-    if (unlockedChapters.includes(chapterId)) {
-      return NextResponse.json({ error: 'Chapter already unlocked' }, { status: 400 });
-    }
+      const buyerData = buyerSnap.data() as any;
+      const chapterData = chapterSnap.data() as any;
+      const currentCoins = Number(buyerData.coins || 0);
 
-    // 3. Execute atomic batch write
-    const batch = writeBatch(db);
+      // Check if already unlocked
+      const unlockedChapters: string[] = buyerData.unlockedChapters || [];
+      if (unlockedChapters.includes(chapterId)) {
+        return {
+          alreadyUnlocked: true,
+          content: chapterData.content || '',
+          newCoins: currentCoins,
+        };
+      }
 
-    // Deduct coins from buyer + add chapter to unlockedChapters
-    const buyerRef = doc(db, 'users', buyerId);
-    batch.update(buyerRef, {
-      coins: increment(-price),
-      unlockedChapters: [...unlockedChapters, chapterId],
-    });
+      if (currentCoins < price) {
+        throw new Error(`Bạn không đủ Xu. Cần ${price} Xu, hiện có ${currentCoins} Xu.`);
+      }
 
-    // Calculate revenue split: 60% author, 40% platform
-    const authorShare = Math.floor(price * 0.6);
-    const platformFee = price - authorShare;
+      // Calculate revenue split: 60% author, 40% platform
+      const authorShare = Math.floor(price * 0.6);
+      const platformFee = price - authorShare;
 
-    // Credit author (only if buyer != author)
-    if (authorId !== buyerId) {
-      const authorRef = doc(db, 'users', authorId);
-      batch.update(authorRef, {
-        coins: increment(authorShare),
+      // Deduct coins from buyer + add chapter to unlockedChapters
+      tx.update(buyerRef, {
+        coins: FieldValue.increment(-price),
+        unlockedChapters: FieldValue.arrayUnion(chapterId),
+        updatedAt: adminTimestamp(),
       });
-    }
 
-    // Log transaction
-    const txRef = doc(collection(db, 'transactions'));
-    batch.set(txRef, {
-      type: 'UNLOCK_CHAPTER',
-      chapterId,
-      novelId,
-      buyerId,
-      authorId,
-      price,
-      authorShare,
-      platformFee,
-      createdAt: serverTimestamp(),
+      // Credit author (only if buyer != author)
+      if (authorId !== buyerId) {
+        const authorRef = db.collection('users').doc(authorId);
+        tx.update(authorRef, {
+          coins: FieldValue.increment(authorShare),
+          updatedAt: adminTimestamp(),
+        });
+      }
+
+      // Log transaction
+      const txRef = db.collection('transactions').doc();
+      tx.set(txRef, {
+        type: 'UNLOCK_CHAPTER',
+        chapterId,
+        novelId,
+        buyerId,
+        authorId,
+        price,
+        authorShare,
+        platformFee,
+        createdAt: adminTimestamp(),
+      });
+
+      return {
+        alreadyUnlocked: false,
+        content: chapterData.content || '',
+        newCoins: currentCoins - price,
+        authorShare,
+      };
     });
 
-    await batch.commit();
-
-    // Increment the 'unlock_vip' daily mission (best-effort, non-fatal).
+    // Increment daily mission 'unlock_vip' (best-effort, non-fatal)
     try {
       const today = new Date().toISOString().slice(0, 10);
-      const progressRef = adminDb().doc(`users/${buyerId}/daily_missions/${today}/progress/unlock_vip`);
+      const progressRef = db.doc(`users/${buyerId}/daily_missions/${today}/progress/unlock_vip`);
       const dedupKey = `chapter:${chapterId}`;
-      await adminDb().runTransaction(async (tx) => {
+      await db.runTransaction(async (tx) => {
         const p = await tx.get(progressRef);
         const data = (p.exists ? p.data() : {}) as any;
         const keys: string[] = data.dedupKeys || [];
@@ -112,11 +126,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: true,
       message: 'Chapter unlocked successfully',
-      deducted: price,
-      authorShare,
+      content: result.content,
+      newCoins: result.newCoins,
     });
   } catch (error: any) {
-    console.error('Unlock chapter error:', error);
-    return NextResponse.json({ error: 'Internal server error', details: error.message }, { status: 500 });
+    console.error('[unlock-chapter] error:', error);
+    return NextResponse.json(
+      { error: error.message || 'Mở khóa chương thất bại' },
+      { status: 400 }
+    );
   }
 }

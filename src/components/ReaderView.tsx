@@ -124,6 +124,37 @@ export default function ReaderView({ novel, chapter, onBack, onChapterChange, on
 
   // Use AuthContext instead of duplicate listener
   const { userProfile } = useAuth();
+  const [unlockedContent, setUnlockedContent] = useState<string | null>(null);
+  const [loadingContent, setLoadingContent] = useState(false);
+
+  // VIP monthly unlocks all VIP chapters; otherwise check per-chapter purchase.
+  const isChapterLocked = !isChapterUnlockedByUser(chapter.id, !!chapter.isVip, userProfile);
+  const vipActive = isVipActive(userProfile);
+
+  // When chapter is unlocked but we only have the teaser from SSR, fetch full content
+  useEffect(() => {
+    let active = true;
+    if (chapter.isVip && !isChapterLocked && !unlockedContent && auth.currentUser) {
+      setLoadingContent(true);
+      auth.currentUser.getIdToken().then((token) => {
+        return fetch(`/api/chapter/content?novelId=${encodeURIComponent(novel.id)}&chapterId=${encodeURIComponent(chapter.id)}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+      }).then((res) => res.json())
+        .then((data) => {
+          if (active && data.ok && data.content) {
+            setUnlockedContent(data.content);
+          }
+        })
+        .catch((err) => console.error('[ReaderView] fetch full content err', err))
+        .finally(() => {
+          if (active) setLoadingContent(false);
+        });
+    }
+    return () => { active = false; };
+  }, [chapter.id, chapter.isVip, isChapterLocked, novel.id, unlockedContent]);
+
+  const activeContent = (chapter.isVip && unlockedContent) ? unlockedContent : (chapter.content || '');
 
   const handleUnlockChapter = async () => {
     if (!auth.currentUser || !userProfile) {
@@ -137,52 +168,33 @@ export default function ReaderView({ novel, chapter, onBack, onChapterChange, on
     
     setIsUnlocking(true);
     try {
-      const { writeBatch, increment } = await import('firebase/firestore');
-      const batch = writeBatch(db);
-
-      // 1. Trừ xu người mua + cập nhật danh sách chương đã mở
-      const buyerRef = doc(db, 'users', auth.currentUser.uid);
-      batch.set(buyerRef, {
-        coins: userProfile.coins - price,
-        unlockedChapters: [...(userProfile.unlockedChapters || []), chapter.id]
-      }, { merge: true });
-
-      // 2. Chuyển 60% Xu cho tác giả (nếu người mua không phải tác giả)
-      if (novel.authorId && novel.authorId !== auth.currentUser.uid) {
-        const authorShare = Math.floor(price * 0.6);
-        const platformFee = price - authorShare;
-
-        const authorRef = doc(db, 'users', novel.authorId);
-        batch.set(authorRef, {
-          coins: increment(authorShare)
-        }, { merge: true });
-
-        // 3. Ghi vào sổ giao dịch
-        const logRef = doc(collection(db, 'transactions'));
-        batch.set(logRef, {
-          type: 'UNLOCK_CHAPTER',
-          chapterId: chapter.id,
+      const token = await auth.currentUser.getIdToken();
+      const res = await fetch('/api/unlock-chapter', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
           novelId: novel.id,
-          buyerId: auth.currentUser.uid,
+          chapterId: chapter.id,
+          chapterPrice: price,
           authorId: novel.authorId,
-          price: price,
-          authorShare: authorShare,
-          platformFee: platformFee,
-          createdAt: serverTimestamp()
-        });
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Có lỗi khi mở khóa.');
+      if (data.content) {
+        setUnlockedContent(data.content);
       }
-
-      await batch.commit();
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
-      alert('Có lỗi khi mở khóa. Quý khách vui lòng thử lại.');
+      alert(e.message || 'Có lỗi khi mở khóa. Quý khách vui lòng thử lại.');
+    } finally {
+      setIsUnlocking(false);
     }
-    setIsUnlocking(false);
   };
-
-  // VIP monthly unlocks all VIP chapters; otherwise check per-chapter purchase.
-  const isChapterLocked = !isChapterUnlockedByUser(chapter.id, !!chapter.isVip, userProfile);
-  const vipActive = isVipActive(userProfile);
 
   const [audioQueue, setAudioQueue] = useState<string[]>([]);
 
@@ -211,7 +223,7 @@ export default function ReaderView({ novel, chapter, onBack, onChapterChange, on
 
     // Lần đầu nhấn Play: Phá vỡ text thành từng đoạn ngắn (Split by sentences or punctuation)
     setIsAudioLoading(true);
-    const fullText = chapter.title + ". " + chapter.content;
+    const fullText = chapter.title + ". " + activeContent;
     const sentences = fullText.match(/[^.!?\n]+[.!?\n]+/g) || [fullText];
     
     // Ghép các câu quá ngắn lại với nhau để API tối ưu hơn (khoảng 300-400 ký tự mỗi chunk)
@@ -599,7 +611,13 @@ export default function ReaderView({ novel, chapter, onBack, onChapterChange, on
             onMouseUp={handleSelection}
             onTouchEnd={handleSelection}
           >
-            {chapter.content.split('\n\n').map((para, i) => {
+            {loadingContent ? (
+              <div className="flex flex-col items-center justify-center py-16 space-y-3">
+                <Loader2 className="size-8 text-primary animate-spin" />
+                <p className="text-sm font-bold text-muted">Đang tải nội dung chương VIP...</p>
+              </div>
+            ) : (
+              activeContent.split('\n\n').map((para, i) => {
               const paragraphComments = groupedComments[i] || [];
               return (
                 <div key={i} className="relative group">
@@ -631,7 +649,7 @@ export default function ReaderView({ novel, chapter, onBack, onChapterChange, on
                   )}
                 </div>
               );
-            })}
+            }))}
           </div>
         )}
 
@@ -749,7 +767,7 @@ export default function ReaderView({ novel, chapter, onBack, onChapterChange, on
               </div>
 
               <div className="p-4 mb-4 bg-background-light rounded-xl text-xs font-medium italic text-text-main/70 line-clamp-4 leading-relaxed border-l-4 border-primary">
-                {chapter.content.split('\n\n')[showSidebarThread]}
+                {activeContent.split('\n\n')[showSidebarThread]}
               </div>
 
               <div className="flex-1 overflow-y-auto space-y-6 shrink-0 custom-scrollbar pr-2 mb-4">

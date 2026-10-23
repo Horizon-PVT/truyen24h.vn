@@ -6,14 +6,13 @@ service cloud.firestore {
       // Cho phép đọc thông tin user công khai
       allow read: if true;
       
+      // Cho phép user tạo profile lần đầu khi đăng nhập
+      allow create: if request.auth != null && request.auth.uid == userId;
+
       // Cho phép user tự sửa thông tin CỦA MÌNH
-      // Coins chỉ được GIẢM (trả xu khi unlock/donate), KHÔNG được tự cộng
-      allow write: if request.auth != null && request.auth.uid == userId 
-                   && (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'photoURL', 'email', 'unlockedChapters', 'donateQR', 'lastCheckIn', 'coins', 'contributionScore', 'badges', 'checkInStreak', 'longestStreak']))
-                   && (
-                     !request.resource.data.diff(resource.data).affectedKeys().hasAny(['coins'])
-                     || request.resource.data.coins <= resource.data.coins
-                   );
+      // BẢO VỆ TUYỆT ĐỐI: Coins, unlockedChapters, VIP, totalSpentVnd chỉ do Admin SDK cập nhật!
+      allow update: if request.auth != null && request.auth.uid == userId 
+                   && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['coins', 'unlockedChapters', 'isVip', 'vipUntil', 'vipPlan', 'totalSpentVnd']);
 
       // Reading progress — chỉ user ấy đọc/ghi của chính mình.
       // Subcollections KHÔNG kế thừa rules cha, phải khai báo riêng nếu không
@@ -40,17 +39,7 @@ service cloud.firestore {
       }
     }
 
-    // 2. Cho phép CỘNG xu cho tác giả khi mua chương/donate
-    // Chỉ cho phép: user đã đăng nhập + chỉ sửa field coins + coins tăng lên (increment)
-    // + KHÔNG được tự cộng cho CHÍNH MÌNH (ngăn exploit)
-    match /users/{authorId} {
-       allow update: if request.auth != null 
-                     && request.auth.uid != authorId
-                     && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['coins'])
-                     && request.resource.data.coins > resource.data.coins;
-    }
-
-    // 3. Truyện (Novels)
+    // 2. Truyện (Novels)
     match /novels/{novelId} {
       allow read: if true;
       allow create: if request.auth != null;

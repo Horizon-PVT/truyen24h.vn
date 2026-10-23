@@ -18,6 +18,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { adminDb, serverTimestamp, FieldValue } from '@/lib/firebaseAdmin';
+import { requireFirebaseUser } from '@/lib/apiAuth';
 
 export const runtime = 'nodejs';
 
@@ -27,14 +28,23 @@ const MIN_XU = 100;
 
 export async function POST(req: NextRequest) {
   try {
+    const auth = await requireFirebaseUser(req);
+    if (!auth.ok) {
+      return auth.response;
+    }
+
     const body = await req.json().catch(() => ({}));
     const uid = body.uid as string | undefined;
+
+    if (!uid || uid !== auth.user.uid) {
+      return NextResponse.json({ error: 'Forbidden: UID mismatch' }, { status: 403 });
+    }
+
     const amountXu = Math.floor(Number(body.amountXu));
     const bankName = (body.bankName || '').toString().trim().slice(0, 80);
     const accountName = (body.accountName || '').toString().trim().slice(0, 80);
     const accountNumber = (body.accountNumber || '').toString().trim().slice(0, 30);
 
-    if (!uid) return NextResponse.json({ error: 'Missing uid' }, { status: 400 });
     if (!bankName || !accountName || !accountNumber) {
       return NextResponse.json({ error: 'Vui lòng nhập đầy đủ thông tin ngân hàng' }, { status: 400 });
     }

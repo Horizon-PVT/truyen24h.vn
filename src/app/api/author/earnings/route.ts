@@ -4,15 +4,12 @@
  * Aggregates an author's earnings from the transactions collection
  * (where type is UNLOCK_CHAPTER or DONATE and authorId == uid).
  *
- * Returns:
- *   currentBalance: number  // xu currently in their wallet
- *   thisMonthXu, thisMonthVnd
- *   allTimeXu, allTimeVnd
- *   unlockCount, donateCount
- *   recent: [{type, amount, novelId?, createdAt}]
+ * Protected: Requires verified Firebase ID token (caller must match uid)
+ * or admin authorization.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { adminDb } from '@/lib/firebaseAdmin';
+import { requireFirebaseUser, authorizeAdmin } from '@/lib/apiAuth';
 
 export const runtime = 'nodejs';
 
@@ -21,6 +18,18 @@ const XU_TO_VND = 100;
 export async function GET(req: NextRequest) {
   const uid = req.nextUrl.searchParams.get('uid');
   if (!uid) return NextResponse.json({ error: 'Missing uid' }, { status: 400 });
+
+  // 1. Auth verification
+  const userAuth = await requireFirebaseUser(req);
+  if (!userAuth.ok) {
+    const adminAuth = await authorizeAdmin(req);
+    if (!adminAuth.ok) return userAuth.response;
+  } else if (userAuth.user.uid !== uid) {
+    const adminAuth = await authorizeAdmin(req);
+    if (!adminAuth.ok) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
+  }
 
   try {
     const db = adminDb();

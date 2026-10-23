@@ -1,9 +1,7 @@
 /**
  * Sitemap — emitted on every request (Next.js calls this in a server context).
  *
- * Uses Firebase Admin SDK so it works reliably in Vercel serverless. The
- * Firebase client SDK relies on long-lived gRPC streams that frequently
- * fail to initialize inside short-lived serverless invocations.
+ * Uses Firebase Admin SDK so it works reliably across serverless and standalone VPS.
  */
 import { MetadataRoute } from 'next';
 import { adminDb } from '@/lib/firebaseAdmin';
@@ -29,18 +27,40 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
 
   try {
     const snap = await adminDb().collection('novels').get();
-    const novelUrls: MetadataRoute.Sitemap = snap.docs
-      .filter((d: any) => isPublicItem(d.data()))
-      .map((d: any) => {
-        const data = d.data() as any;
-        const ms = data.updatedAt?.toMillis?.() ?? Date.now();
-        return {
-          url: `${baseUrl}/truyen/${d.id}`,
-          lastModified: new Date(ms),
-          changeFrequency: 'daily' as const,
-          priority: 0.8,
-        };
-      });
+    const publicNovelDocs = snap.docs.filter((d: any) => isPublicItem(d.data()));
+
+    const novelUrls: MetadataRoute.Sitemap = publicNovelDocs.map((d: any) => {
+      const data = d.data() as any;
+      const ms = data.updatedAt?.toMillis?.() ?? Date.now();
+      return {
+        url: `${baseUrl}/truyen/${d.id}`,
+        lastModified: new Date(ms),
+        changeFrequency: 'daily' as const,
+        priority: 0.8,
+      };
+    });
+
+    let chapterUrls: MetadataRoute.Sitemap = [];
+    try {
+      const chaptersSnap = await adminDb().collectionGroup('chapters').get();
+      chapterUrls = chaptersSnap.docs
+        .filter((c: any) => isPublicItem(c.data()))
+        .map((c: any) => {
+          const novelId = c.ref.parent.parent?.id;
+          if (!novelId) return null;
+          const data = c.data() as any;
+          const ms = data.updatedAt?.toMillis?.() ?? data.createdAt?.toMillis?.() ?? Date.now();
+          return {
+            url: `${baseUrl}/doc/${novelId}/${c.id}`,
+            lastModified: new Date(ms),
+            changeFrequency: 'weekly' as const,
+            priority: 0.6,
+          };
+        })
+        .filter(Boolean) as MetadataRoute.Sitemap;
+    } catch (e) {
+      console.warn('Sitemap collectionGroup chapters warning:', e);
+    }
 
     let blogUrls: MetadataRoute.Sitemap = [];
     try {
@@ -61,7 +81,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
       // Blog collection may not exist yet.
     }
 
-    return [...staticPages, ...novelUrls, ...blogUrls];
+    return [...staticPages, ...novelUrls, ...chapterUrls, ...blogUrls];
   } catch (err) {
     // Fall back to static-only if admin creds aren't configured yet.
     return staticPages;

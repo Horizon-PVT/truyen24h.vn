@@ -1,5 +1,6 @@
 "use client";
 import React, { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { User, updateProfile } from 'firebase/auth';
 import { X, Camera, Save, Loader2, Zap, Coins, Crown, Gift } from 'lucide-react';
 import { db, handleFirestoreError, OperationType } from '../firebase';
@@ -14,6 +15,7 @@ interface ProfileEditModalProps {
 }
 
 export default function ProfileEditModal({ user, onClose, onUpdate }: ProfileEditModalProps) {
+  const router = useRouter();
   const [displayName, setDisplayName] = useState(user.displayName || '');
   const [photoURL, setPhotoURL] = useState(user.photoURL || '');
   const [isUpdating, setIsUpdating] = useState(false);
@@ -29,29 +31,9 @@ export default function ProfileEditModal({ user, onClose, onUpdate }: ProfileEdi
     return () => unsubscribe();
   }, [user]);
 
-  const handleRecharge = async () => {
-    const path = `users/${user.uid}`;
-    try {
-      await updateDoc(doc(db, path), {
-        coins: increment(1000)
-      });
-      alert('Đã nạp thành công 1000 Ngọc! (Bản thử nghiệm)');
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, path);
-    }
-  };
-
-  const handleUpgradeVIP = async () => {
-    const path = `users/${user.uid}`;
-    try {
-      await updateDoc(doc(db, path), {
-        isVip: true,
-        badges: ['VIP', 'Fan Cứng']
-      });
-      alert('Chúc mừng! Bạn đã trở thành thành viên VIP. (Bản thử nghiệm)');
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, path);
-    }
+  const handleUpgradeVIP = () => {
+    onClose();
+    router.push('/vip');
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -109,7 +91,8 @@ export default function ProfileEditModal({ user, onClose, onUpdate }: ProfileEdi
             <span className="text-[10px] font-black text-muted uppercase tracking-widest mb-1">Số dư Ngọc</span>
             <span className="text-xl font-black text-text-main">{userProfile?.coins || 0}</span>
             <button 
-              onClick={handleRecharge}
+              type="button"
+              onClick={() => { onClose(); router.push('/vip'); }}
               className="text-[10px] font-black text-primary uppercase tracking-widest mt-2 hover:underline"
             >
               Nạp thêm

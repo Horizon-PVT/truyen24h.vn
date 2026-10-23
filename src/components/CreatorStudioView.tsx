@@ -276,31 +276,30 @@ export default function CreatorStudioView({ user, onLogin }: CreatorStudioViewPr
     const currentCoins = userProfile.coins || 0;
     
     try {
-      const batch = writeBatch(db);
-      
-      const userRef = doc(db, 'users', user.uid);
-      batch.set(userRef, { coins: 0 }, { merge: true });
-
-      const reqRef = doc(collection(db, 'withdraw_requests'));
-      batch.set(reqRef, {
-        userId: user.uid,
-        userName: userProfile.displayName || 'Khuyết danh',
-        userEmail: userProfile.email || '',
-        amountXu: currentCoins,
-        amountVND: currentCoins * 100,
-        bankName,
-        accountName,
-        accountNumber,
-        status: 'PENDING',
-        createdAt: serverTimestamp()
+      const token = await user.getIdToken();
+      const res = await fetch('/api/withdraw/request', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          uid: user.uid,
+          amountXu: currentCoins,
+          bankName,
+          accountName,
+          accountNumber,
+        }),
       });
 
-      await batch.commit();
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Rút tiền thất bại');
+
       setShowWithdrawModal(false);
       alert('Gửi yêu cầu rút tiền thành công!');
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
-      alert('Lỗi hệ thống khi tạo lệnh rút tiền.');
+      alert(e.message || 'Lỗi hệ thống khi tạo lệnh rút tiền.');
     }
   };
 
@@ -368,16 +367,6 @@ export default function CreatorStudioView({ user, onLogin }: CreatorStudioViewPr
             </div>
           </div>
           <div className="flex flex-col sm:flex-row items-center gap-3">
-            {isAdminUser && (
-              <button 
-                onClick={() => updateDoc(doc(db, 'users', user.uid), { coins: increment(500) })}
-                className="w-full sm:w-auto flex items-center justify-center gap-2 px-8 py-4 bg-orange-500/10 text-orange-500 rounded-full font-black text-xs uppercase tracking-widest shadow-lg hover:bg-orange-500 hover:text-white transition-all"
-              >
-                <Zap className="size-4" />
-                <span>Bơm 500 Xu (Test Admin)</span>
-              </button>
-            )}
-
             <div className="flex flex-wrap gap-2 items-center"><button 
               onClick={handleWithdrawClick}
               className="w-full sm:w-auto flex items-center justify-center gap-2 px-8 py-4 bg-background-light text-text-main border-2 border-accent/10 rounded-full font-black text-xs uppercase tracking-widest shadow-lg hover:border-primary hover:text-primary transition-all"

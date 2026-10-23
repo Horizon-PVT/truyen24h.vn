@@ -67,7 +67,11 @@ export default function AuthorPayoutPanel() {
     if (!user) return;
     setLoading(true);
     try {
-      const r = await fetch(`/api/author/earnings?uid=${encodeURIComponent(user.uid)}`, { cache: 'no-store' });
+      const token = await user.getIdToken();
+      const r = await fetch(`/api/author/earnings?uid=${encodeURIComponent(user.uid)}`, {
+        cache: 'no-store',
+        headers: { Authorization: `Bearer ${token}` },
+      });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || 'Load failed');
       setEarnings(data);
@@ -109,9 +113,13 @@ export default function AuthorPayoutPanel() {
     setSubmitting(true);
     setToast(null);
     try {
+      const token = await user.getIdToken();
       const r = await fetch('/api/withdraw/request', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({ uid: user.uid, amountXu: amount, bankName, accountName, accountNumber }),
       });
       const data = await r.json();

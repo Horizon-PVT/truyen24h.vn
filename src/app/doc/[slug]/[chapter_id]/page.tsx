@@ -55,9 +55,18 @@ async function fetchNovelAndChapter(slug: string, chapterId: string) {
     .map((d: QueryDocumentSnapshot<DocumentData>) => ({ id: d.id, ...d.data() }))
     .filter(isPublicItem);
 
+  // VIP Paywall: If chapter is VIP, only provide a teaser in the initial SSR payload.
+  // Full content is securely loaded client-side via /api/chapter/content after token verification.
+  const safeChapterData = { ...chapterData };
+  if (safeChapterData.isVip) {
+    const raw = String(safeChapterData.content || '').trim();
+    const teaser = raw.slice(0, 200).trim();
+    safeChapterData.content = `${teaser}...\n\n[🔒 CHƯƠNG VIP: Nội dung này thuộc quyền sở hữu đặc biệt. Vui lòng đăng nhập và mở khóa để đọc toàn bộ.]`;
+  }
+
   return {
     novel: serializeFirestore({ id: novelSnap.id, ...novelData, chapters: chaptersData }) as SerializedNovel,
-    chapter: serializeFirestore({ id: chapterSnap.id, ...chapterData }) as SerializedChapter,
+    chapter: serializeFirestore({ id: chapterSnap.id, ...safeChapterData }) as SerializedChapter,
   } satisfies FetchResult;
 }
 

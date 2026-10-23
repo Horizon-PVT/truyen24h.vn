@@ -12,16 +12,7 @@
  * All functions throw if GEMINI_API_KEY isn't set, so callers
  * surface a friendly error.
  */
-import { GoogleGenAI, Type } from '@google/genai';
-
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const ai = GEMINI_API_KEY ? new GoogleGenAI({ apiKey: GEMINI_API_KEY }) : null;
-const MODEL = 'gemini-2.5-flash';
-
-function ensureAi(): GoogleGenAI {
-  if (!ai) throw new Error('Gemini API key chưa cấu hình.');
-  return ai;
-}
+import { generateAIText } from './aiProvider';
 
 /* ---------- Chapter detection ---------- */
 
@@ -68,7 +59,6 @@ export async function translateChapter(opts: {
   novelTitle?: string;
   glossary?: Record<string, string>;
 }): Promise<TranslatedChapter> {
-  ensureAi();
   const glossaryLines = opts.glossary
     ? Object.entries(opts.glossary).map(([cn, vn]) => `${cn} = ${vn}`).join('\n')
     : '';
@@ -92,20 +82,11 @@ Trả JSON:
 - title: tiêu đề chương 5-12 chữ tiếng Việt (chỉ tên, không "Chương X")
 - content: toàn bộ chương đã dịch (markdown plain với \\n\\n giữa đoạn)`;
 
-  const response = await ai!.models.generateContent({
-    model: MODEL,
-    contents: prompt,
-    config: {
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          title: { type: Type.STRING },
-          content: { type: Type.STRING },
-        },
-        required: ['title', 'content'],
-      },
-    },
+  const res = await generateAIText({
+    prompt,
+    jsonMode: true,
   });
-  return JSON.parse(response.text || '{}') as TranslatedChapter;
+
+  const rawJson = res.text.replace(/^```json\s*|^```\s*|```$/g, '').trim();
+  return JSON.parse(rawJson) as TranslatedChapter;
 }

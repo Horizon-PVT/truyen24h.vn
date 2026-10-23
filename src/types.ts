@@ -9,6 +9,16 @@ export interface Chapter {
   ttsAudioUrl?: string;
 }
 
+export interface LorebookEntry {
+  id: string;
+  keywords: string[];
+  category: 'character' | 'faction' | 'power_system' | 'item' | 'location';
+  name: string;
+  description: string;
+  status?: string;
+  notes?: string;
+}
+
 export interface Novel {
   id: string;
   title: string;
@@ -28,6 +38,8 @@ export interface Novel {
   translationGroup?: string;
   latestChapterNumber?: number;
   aiAssisted?: boolean;
+  worldSetting?: string;
+  lorebook?: LorebookEntry[];
   createdAt?: any;
   updatedAt?: any;
 }
