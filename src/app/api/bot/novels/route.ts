@@ -31,27 +31,53 @@ export async function GET(req: NextRequest) {
     const genre = (searchParams.get('genre') || '').toLowerCase().trim();
     const limitCount = Math.min(parseInt(searchParams.get('limit') || '20', 10), 100);
 
-    const db = adminDb();
-    let queryRef: FirebaseFirestore.Query = db.collection('novels').orderBy('updatedAt', 'desc').limit(limitCount);
+    let novels: any[] = [];
 
-    const snapshot = await queryRef.get();
-    let novels = snapshot.docs.map(doc => {
-      const data = doc.data();
-      return {
-        id: doc.id,
-        title: data.title || '',
-        author: data.author || '',
-        description: data.description || '',
-        genres: data.genres || [],
-        totalChapters: data.totalChapters || 0,
-        views: data.views || 0,
-        rating: data.rating || 5,
-        status: data.status || 'ongoing',
-        coverUrl: data.coverUrl || '',
-        updatedAt: data.updatedAt?.toDate?.()?.toISOString() || null,
-        url: `${getSiteUrl()}/truyen/${doc.id}`,
-      };
-    });
+    try {
+      const db = adminDb();
+      const queryRef: FirebaseFirestore.Query = db.collection('novels').orderBy('updatedAt', 'desc').limit(limitCount);
+      const snapshot = await queryRef.get();
+      novels = snapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          title: data.title || '',
+          author: data.author || '',
+          description: data.description || '',
+          genres: data.genres || [],
+          totalChapters: data.totalChapters || 0,
+          views: data.views || 0,
+          rating: data.rating || 5,
+          status: data.status || 'ongoing',
+          coverUrl: data.coverUrl || '',
+          updatedAt: data.updatedAt?.toDate?.()?.toISOString() || null,
+          url: `${getSiteUrl()}/truyen/${doc.id}`,
+        };
+      });
+    } catch {
+      // Fallback to client SDK if service account is not yet configured
+      const { db } = await import('@/firebase');
+      const { collection, query, orderBy, limit, getDocs } = await import('firebase/firestore');
+      const qRef = query(collection(db, 'novels'), orderBy('updatedAt', 'desc'), limit(limitCount));
+      const snapshot = await getDocs(qRef);
+      novels = snapshot.docs.map(doc => {
+        const data = doc.data() as any;
+        return {
+          id: doc.id,
+          title: data.title || '',
+          author: data.author || '',
+          description: data.description || '',
+          genres: data.genres || [],
+          totalChapters: data.totalChapters || 0,
+          views: data.views || 0,
+          rating: data.rating || 5,
+          status: data.status || 'ongoing',
+          coverUrl: data.coverUrl || '',
+          updatedAt: data.updatedAt?.toDate?.()?.toISOString?.() || null,
+          url: `${getSiteUrl()}/truyen/${doc.id}`,
+        };
+      });
+    }
 
     if (q) {
       novels = novels.filter(n => n.title.toLowerCase().includes(q) || n.author.toLowerCase().includes(q));

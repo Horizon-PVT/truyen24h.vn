@@ -14,12 +14,24 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const db = adminDb();
-    const novelsSnap = await db.collection('novels').count().get();
-    const totalNovels = novelsSnap.data().count;
+    let totalNovels = 0;
+    let totalChapters = 0;
 
-    const chaptersSnap = await db.collectionGroup('chapters').count().get();
-    const totalChapters = chaptersSnap.data().count;
+    try {
+      const db = adminDb();
+      const novelsSnap = await db.collection('novels').count().get();
+      totalNovels = novelsSnap.data().count;
+
+      const chaptersSnap = await db.collectionGroup('chapters').count().get();
+      totalChapters = chaptersSnap.data().count;
+    } catch {
+      // Fallback to client SDK if service account is not yet loaded on VPS
+      const { db } = await import('@/firebase');
+      const { collection, getCountFromServer } = await import('firebase/firestore');
+      const novelsSnap = await getCountFromServer(collection(db, 'novels'));
+      totalNovels = novelsSnap.data().count;
+      totalChapters = 0;
+    }
 
     return NextResponse.json({
       ok: true,
