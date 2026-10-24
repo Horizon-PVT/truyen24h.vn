@@ -385,7 +385,7 @@ export default function ReaderView({ novel, chapter, onBack, onChapterChange, on
   };
 
   const fonts = {
-    serif: 'font-serif',
+    serif: 'font-reading',
     sans: 'font-sans',
   };
 

@@ -1,10 +1,10 @@
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Outfit:wght@300;400;500;600;700;800&family=Newsreader:ital,opsz,wght@0,6..72,400..800;1,6..72,400..800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400..700;1,400..700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Outfit:wght@300;400;500;600;700;800&family=Newsreader:ital,opsz,wght@0,6..72,400..800;1,6..72,400..800&display=swap');
 @import "tailwindcss";
 
 @theme {
   --font-display: "Plus Jakarta Sans", "Outfit", sans-serif;
   --font-ui: "Plus Jakarta Sans", "Outfit", sans-serif;
-  --font-reading: "Times New Roman", "Newsreader", "Georgia", serif;
+  --font-reading: "Lora", "Newsreader", "Georgia", serif;
   
   --color-primary: #F59E0B;
   --color-primary-hover: #D97706;
