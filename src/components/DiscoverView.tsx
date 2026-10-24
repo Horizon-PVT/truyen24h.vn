@@ -65,6 +65,14 @@ export default function DiscoverView({ onNovelSelect }: DiscoverViewProps) {
   const hotNovels = allNovels.filter(n => n.isHot).slice(0, 10);
   const fullNovels = allNovels.filter(n => n.isFull || n.status === 'Hoàn thành').slice(0, 8);
   const latestUpdates = allNovels;
+  const leaderboardNovels = [...allNovels].sort((a, b) => (Number(b.views) || 0) - (Number(a.views) || 0)).slice(0, 10);
+
+  const formatViews = (views: any) => {
+    const v = Number(views) || 0;
+    if (v >= 1000000) return (v / 1000000).toFixed(1) + 'M';
+    if (v >= 1000) return (v / 1000).toFixed(1) + 'K';
+    return String(v);
+  };
 
   if (loading) return <div className="h-screen flex justify-center items-center"><Loader2 className="animate-spin text-primary size-12" /></div>;
   if (allNovels.length === 0) return <div className="h-screen flex justify-center items-center text-white">Không có truyện nào.</div>;
@@ -85,7 +93,7 @@ export default function DiscoverView({ onNovelSelect }: DiscoverViewProps) {
   };
 
   const getCoverUrl = (url: string | undefined, id: string) => {
-    return url || `https://picsum.photos/seed/novel-${id}/400/600`;
+    return url || '/logo.jpg';
   };
 
   return (
@@ -359,7 +367,7 @@ export default function DiscoverView({ onNovelSelect }: DiscoverViewProps) {
             </div>
 
             <ul className="flex flex-col gap-8">
-              {activeLeaderboardTab === 'TRUYỆN' && allNovels.slice(0, 10).map((novel, index) => (
+              {activeLeaderboardTab === 'TRUYỆN' && leaderboardNovels.map((novel, index) => (
                 <li 
                   key={novel.id || index}
                   onClick={() => onNovelSelect(novel)}
@@ -372,7 +380,7 @@ export default function DiscoverView({ onNovelSelect }: DiscoverViewProps) {
                     <h4 className="font-bold text-text-main truncate group-hover:text-primary transition-colors text-sm mb-1">{novel.title}</h4>
                     <div className="flex items-center justify-between">
                       <span className="text-[10px] text-muted uppercase font-black tracking-widest bg-background-light px-2 py-0.5 rounded">{novel.genres[0] || 'Khác'}</span>
-                      <span className="text-[10px] text-muted/60 font-bold">{novel.views} view</span>
+                      <span className="text-[10px] text-muted/60 font-bold">{formatViews(novel.views)} xem</span>
                     </div>
                   </div>
                 </li>
