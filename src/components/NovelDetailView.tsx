@@ -9,6 +9,7 @@ import { getAIRecommendations, getNovelSummary } from '../services/geminiService
 import { useAuth } from '@/contexts/AuthContext';
 import { isPublicItem } from '../lib/visibilityGuard';
 import { resolveNovelCover } from '@/lib/covers';
+import { formatViews } from '@/lib/novelStats';
 
 type ResumeProgress = {
   lastChapterId?: string;
@@ -500,7 +501,7 @@ export default function NovelDetailView({ novel, onChapterSelect, onNovelSelect,
                   <Eye className="size-6 text-muted" />
                   <span className="text-muted text-sm font-bold uppercase tracking-widest">Lượt xem</span>
                 </div>
-                <span className="font-black text-text-main font-display text-2xl">{novel.views}</span>
+                <span className="font-black text-text-main font-display text-2xl">{formatViews(novel)}</span>
               </div>
               <div className="flex justify-between items-center">
                 <div className="flex items-center gap-4">

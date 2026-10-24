@@ -3,6 +3,7 @@ import { ChevronLeft, ChevronRight, BookOpen, Flame, Star, Sparkles } from 'luci
 import Link from 'next/link';
 import { Novel } from '../types';
 import { resolveNovelCover } from '@/lib/covers';
+import { formatViews } from '@/lib/novelStats';
 
 interface BannerSliderProps {
   novels: Novel[];
@@ -76,7 +77,7 @@ export default function BannerSlider({ novels }: BannerSliderProps) {
                       <Star className="size-3 fill-amber-400" />
                       {novel.rating || '4.9'}
                     </span>
-                    <span>{novel.views ? (Number(novel.views) >= 1000 ? `${(Number(novel.views)/1000).toFixed(1)}K` : novel.views) : '10K'} xem</span>
+                    <span>{formatViews(novel)} xem</span>
                   </div>
                 </div>
               </div>

@@ -7,6 +7,8 @@ import Pagination from './Pagination';
 import BannerSlider from './BannerSlider';
 import ContinueReadingRail from './ContinueReadingRail';
 import { resolveNovelCover } from '@/lib/covers';
+import { FALLBACK_NOVELS } from '@/data/fallbackNovels';
+import { formatViews, getNovelViews, getNovelTotalChapters } from '@/lib/novelStats';
 
 interface DiscoverViewProps {
   onNovelSelect: (novel: Novel) => void;
@@ -84,7 +86,7 @@ export default function DiscoverView({ onNovelSelect }: DiscoverViewProps) {
     return String(v);
   };
 
-  const allNovels = dynamicNovels;
+  const allNovels = dynamicNovels.length > 0 ? dynamicNovels : (FALLBACK_NOVELS as unknown as Novel[]);
   const hotNovels = allNovels.filter(n => n.isHot).slice(0, 10);
   const fullNovels = allNovels.filter(n => n.isFull || n.status === 'Hoàn thành').slice(0, 8);
   const latestUpdates = allNovels;
@@ -92,7 +94,7 @@ export default function DiscoverView({ onNovelSelect }: DiscoverViewProps) {
     .sort((a, b) => getNovelViews(b) - getNovelViews(a))
     .slice(0, 10);
 
-  if (loading) {
+  if (loading && dynamicNovels.length === 0 && FALLBACK_NOVELS.length === 0) {
     return (
       <div className="h-screen flex flex-col justify-center items-center gap-4 bg-[#0B0C10]">
         <Loader2 className="animate-spin text-amber-500 size-12" />
@@ -362,7 +364,11 @@ export default function DiscoverView({ onNovelSelect }: DiscoverViewProps) {
                       <span className="text-slate-600">•</span>
                       <div className="flex items-center gap-1.5 text-amber-400 font-bold bg-amber-500/10 px-2.5 py-0.5 rounded-md border border-amber-500/20 text-[11px]">
                         <BookOpen className="size-3" />
-                        <span>Chương {novel.latestChapterNumber || novel.chapters?.length || 0}</span>
+                        <span>
+                          {novel.isFull || novel.status === 'Hoàn thành'
+                            ? `Full • ${getNovelTotalChapters(novel)} chương`
+                            : `Chương ${novel.latestChapterNumber || novel.chapters?.length || getNovelTotalChapters(novel)}`}
+                        </span>
                       </div>
                     </div>
                   </div>

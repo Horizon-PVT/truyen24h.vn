@@ -58,7 +58,10 @@ export interface UserProfile {
   coins: number;
   level: number;
   exp: number;
-  badges: string[];
+  contributionScore?: number;
+  role?: 'admin' | 'creator' | 'user';
+  isVip?: boolean;
+  badges?: string[];
   lastCheckIn?: string;
   unlockedChapters?: string[];
   donateQR?: string;

@@ -6,6 +6,8 @@ import Pagination from './Pagination';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { collection, query, onSnapshot, orderBy } from 'firebase/firestore';
 import { isPublicItem } from '../lib/visibilityGuard';
+import { formatViews } from '@/lib/novelStats';
+import { FALLBACK_NOVELS } from '@/data/fallbackNovels';
 
 interface FilterViewProps {
   initialGenre?: string;
@@ -271,7 +273,7 @@ export default function FilterView({ initialGenre, initialSearch, initialChapter
                             <div className="w-[1px] h-3 bg-white/20"></div>
                             <div className="flex items-center gap-1.5">
                               <Eye className="size-4 text-white/80" />
-                              <span className="font-bold text-sm">{novel.views}</span>
+                              <span className="font-bold text-sm">{formatViews(novel)}</span>
                             </div>
                          </div>
                       </div>

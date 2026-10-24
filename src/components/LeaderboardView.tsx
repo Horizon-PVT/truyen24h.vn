@@ -1,29 +1,39 @@
+"use client";
+
 import React, { useState, useEffect } from 'react';
-import { Trophy, Medal, Crown, Star, Zap, MessageSquare, Coins, ChevronRight } from 'lucide-react';
+import { Trophy, Medal, Crown, Zap, MessageSquare, Coins, ChevronRight } from 'lucide-react';
 import { db } from '../firebase';
 import { collection, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
 import { UserProfile } from '../types';
+import { FALLBACK_LEADERS } from '@/data/fallbackLeaders';
 
-export default function LeaderboardView() {
+interface LeaderboardViewProps {
+  initialLeaders?: UserProfile[];
+}
+
+export default function LeaderboardView({ initialLeaders }: LeaderboardViewProps = {}) {
   const [activeTab, setActiveTab] = useState<'exp' | 'coins' | 'reviews'>('exp');
-  const [leaders, setLeaders] = useState<UserProfile[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [leaders, setLeaders] = useState<UserProfile[]>(initialLeaders && initialLeaders.length > 0 ? initialLeaders : FALLBACK_LEADERS);
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    setLoading(true);
     let q;
     if (activeTab === 'exp') {
       q = query(collection(db, 'users'), orderBy('exp', 'desc'), limit(10));
     } else if (activeTab === 'coins') {
       q = query(collection(db, 'users'), orderBy('contributionScore', 'desc'), limit(10));
     } else {
-      // For reviews, we would ideally have a reviewCount field on user profile
       q = query(collection(db, 'users'), orderBy('level', 'desc'), limit(10));
     }
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const fetchedLeaders = snapshot.docs.map(doc => doc.data() as UserProfile);
-      setLeaders(fetchedLeaders);
+      if (snapshot && !snapshot.empty) {
+        const fetchedLeaders = snapshot.docs.map(doc => doc.data() as UserProfile);
+        setLeaders(fetchedLeaders);
+      }
+      setLoading(false);
+    }, (err) => {
+      console.warn('[LeaderboardView] Live snapshot fallback to cached leaders:', err?.message || err);
       setLoading(false);
     });
 
@@ -49,7 +59,7 @@ export default function LeaderboardView() {
             </div>
             <span className="text-xs font-black text-primary uppercase tracking-widest">Vinh danh</span>
           </div>
-          <h1 className="font-display text-5xl font-black text-text-main tracking-tighter uppercase mb-4">Bảng xếp hạng</h1>
+          <h1 className="font-display text-4xl md:text-5xl font-black text-text-main tracking-tighter uppercase mb-4">Bảng xếp hạng</h1>
           <p className="text-muted font-medium">Nơi tôn vinh những độc giả nhiệt huyết nhất Truyen24h.vn</p>
         </div>
 
@@ -87,7 +97,7 @@ export default function LeaderboardView() {
           <div className="divide-y divide-accent/5">
             {leaders.map((leader, index) => (
               <div 
-                key={leader.uid} 
+                key={leader.uid || index} 
                 className={`flex items-center gap-6 p-6 transition-all hover:bg-background-light group ${index < 3 ? 'bg-primary/5' : ''}`}
               >
                 <div className="w-12 flex items-center justify-center shrink-0">
@@ -96,8 +106,8 @@ export default function LeaderboardView() {
                 
                 <div className="size-14 rounded-2xl overflow-hidden border-2 border-white shadow-md shrink-0">
                   <img 
-                    src={leader.photoURL || `https://ui-avatars.com/api/?name=${leader.displayName}`} 
-                    alt="" 
+                    src={leader.photoURL || `https://ui-avatars.com/api/?name=${encodeURIComponent(leader.displayName || 'Doc Gia')}`} 
+                    alt={leader.displayName} 
                     referrerPolicy="no-referrer"
                     className="w-full h-full object-cover" 
                   />
@@ -125,14 +135,14 @@ export default function LeaderboardView() {
                 <div className="text-right shrink-0">
                   {activeTab === 'exp' ? (
                     <div className="flex flex-col items-end">
-                      <span className="text-lg font-black text-text-main">{leader.exp || 0}</span>
+                      <span className="text-lg font-black text-text-main">{(leader.exp || 0).toLocaleString()}</span>
                       <span className="text-[10px] font-bold text-muted uppercase tracking-widest">Kinh nghiệm</span>
                     </div>
                   ) : activeTab === 'coins' ? (
                     <div className="flex flex-col items-end">
                       <div className="flex items-center gap-2">
                         <Coins className="size-4 text-yellow-500" />
-                        <span className="text-lg font-black text-text-main">{(leader as any).contributionScore || 0}</span>
+                        <span className="text-lg font-black text-text-main">{((leader as any).contributionScore || 0).toLocaleString()}</span>
                       </div>
                       <span className="text-[10px] font-bold text-muted uppercase tracking-widest">Xu Đã Tặng</span>
                     </div>
