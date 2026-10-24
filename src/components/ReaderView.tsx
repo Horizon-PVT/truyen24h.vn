@@ -246,6 +246,39 @@ export default function ReaderView({ novel, chapter, onBack, onChapterChange, on
     await playNextChunk(chunks);
   };
 
+  const playWithWebSpeech = (text: string, remainingChunks: string[]) => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+      setIsAudioLoading(false);
+      setIsPlaying(false);
+      return;
+    }
+    try {
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = 'vi-VN';
+      utterance.rate = 1.0;
+      utterance.onend = () => {
+        if (remainingChunks.length > 0) {
+          playNextChunk(remainingChunks);
+        } else {
+          setIsPlaying(false);
+          setIsAudioLoading(false);
+        }
+      };
+      utterance.onerror = () => {
+        setIsPlaying(false);
+        setIsAudioLoading(false);
+      };
+      setIsAudioLoading(false);
+      setIsPlaying(true);
+      window.speechSynthesis.speak(utterance);
+    } catch (err) {
+      console.error('Web Speech fallback error:', err);
+      setIsAudioLoading(false);
+      setIsPlaying(false);
+    }
+  };
+
   const playNextChunk = async (currentChunks: string[] = audioQueue) => {
     if (currentChunks.length === 0) {
       setIsPlaying(false);
@@ -287,12 +320,12 @@ export default function ReaderView({ novel, chapter, onBack, onChapterChange, on
           }
         }, 50);
       } else {
-        alert("Có lỗi kết nối máy chủ giọng đọc AI. Thử lại sau!");
-        setIsAudioLoading(false);
+        // Fallback to browser Web Speech API
+        playWithWebSpeech(chunkToPlay, remainingChunks);
       }
     } catch (e) {
-      console.error(e);
-      setIsAudioLoading(false);
+      console.error('Server TTS error, falling back to Web Speech:', e);
+      playWithWebSpeech(chunkToPlay, remainingChunks);
     }
   };
 

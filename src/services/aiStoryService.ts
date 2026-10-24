@@ -3,20 +3,13 @@
  *
  * Powers the "daily admin" pipeline: brainstorm story ideas, generate full
  * novel metadata, write chapters that hook readers, and produce SEO-friendly
- * summaries. Designed to run on Vercel server routes (Node runtime).
+ * summaries. Designed to run on Vercel/Node server routes.
  *
- * All functions require server-side GEMINI_API_KEY.
- * so the rest of the site keeps working during the credential-setup window.
+ * Backed by generateAIText (BytePlus ModelArk DeepSeek / Gemini / OpenRouter).
  */
-import { GoogleGenAI, Type } from '@google/genai';
 import { GENRES } from '../constants';
 import { LorebookEntry } from '../types';
 import { generateAIText } from './aiProvider';
-
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const ai = GEMINI_API_KEY ? new GoogleGenAI({ apiKey: GEMINI_API_KEY }) : null;
-
-const MODEL = 'gemini-2.5-flash';
 
 export interface GeneratedNovel {
   title: string;
@@ -42,13 +35,8 @@ export interface TrendingTopic {
   suggestedGenres: string[];
 }
 
-function ensureAi(): GoogleGenAI {
-  if (!ai) {
-    throw new Error(
-      'Gemini API key chưa được cấu hình. Hãy thêm GEMINI_API_KEY vào .env.local'
-    );
-  }
-  return ai;
+function cleanJson(text: string): string {
+  return text.replace(/^```json\s*|^```\s*|```$/g, '').trim();
 }
 
 /* ---------------- 1. Topic discovery ---------------- */
@@ -62,10 +50,9 @@ export async function discoverTrendingTopics(opts: {
   excludeRecent?: string[];
 }): Promise<TrendingTopic[]> {
   const { count = 5, excludeRecent = [] } = opts;
-  ensureAi();
 
   const prompt = `Bạn là chuyên gia content cho 1 trang đọc truyện chữ tiếng Việt
-(audience: nữ 18-35, đọc trên di động, thích trùng sinh / ngôn tình / hệ thống / đô thị).
+(audience: nữ 18-35, nam 18-35, đọc trên di động, thích trùng sinh / ngôn tình / hệ thống / đô thị / tiên hiệp).
 Hãy đề xuất ${count} chủ đề truyện đang HOT trong tháng này theo TikTok và Google Trends VN.
 
 Các chủ đề KHÔNG được trùng với danh sách đã có:
@@ -75,36 +62,43 @@ Yêu cầu mỗi chủ đề:
 - Tiêu đề ý tưởng đặc sắc 1 dòng
 - Lý do hot (vì sao reader muốn đọc lúc này)
 - 2-3 thể loại phù hợp từ list: ${GENRES.slice(0, 30).join(', ')}...
-Tránh các chủ đề chung chung; ưu tiên hook cảm xúc mạnh (ngược tâm, báo thù, sủng ngọt, cẩu huyết).`;
+Tránh các chủ đề chung chung; ưu tiên hook cảm xúc mạnh (ngược tâm, báo thù, sủng ngọt, cẩu huyết, trang bức vả mặt).
 
-  const response = await ai!.models.generateContent({
-    model: MODEL,
-    contents: prompt,
-    config: {
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          topics: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                topic: { type: Type.STRING },
-                reasoning: { type: Type.STRING },
-                suggestedGenres: { type: Type.ARRAY, items: { type: Type.STRING } },
-              },
-              required: ['topic', 'reasoning', 'suggestedGenres'],
-            },
-          },
-        },
-        required: ['topics'],
-      },
-    },
+BẮT BUỘC trả lời DUY NHẤT một khối JSON hợp lệ theo format:
+{
+  "topics": [
+    {
+      "topic": "tiêu đề ý tưởng",
+      "reasoning": "lý do hot",
+      "suggestedGenres": ["Ngôn Tình", "Trọng Sinh"]
+    }
+  ]
+}`;
+
+  const res = await generateAIText({
+    prompt,
+    jsonMode: true,
   });
 
-  const data = JSON.parse(response.text || '{"topics":[]}');
-  return data.topics as TrendingTopic[];
+  try {
+    const rawJson = cleanJson(res.text);
+    const data = JSON.parse(rawJson);
+    return (data.topics || []) as TrendingTopic[];
+  } catch (err) {
+    console.error('Failed to parse discoverTrendingTopics JSON:', res.text, err);
+    return [
+      {
+        topic: 'Cô vợ phế vật trùng sinh báo thù giới thượng lưu',
+        reasoning: 'Trend vả mặt báo thù cực hot trên TikTok',
+        suggestedGenres: ['Ngôn Tình', 'Trọng Sinh', 'Đô Thị'],
+      },
+      {
+        topic: 'Vô Địch Kiếm Đế: Trọng sinh từ một gia nô nhỏ bé',
+        reasoning: 'Motif nghịch tập tu tiên thịnh hành nhất',
+        suggestedGenres: ['Tiên Hiệp', 'Huyền Huyễn', 'Trọng Sinh'],
+      },
+    ];
+  }
 }
 
 /* ---------------- 2. Novel outline ---------------- */
@@ -114,52 +108,37 @@ export async function generateNovelOutline(opts: {
   genres?: string[];
   toneHints?: string;
 }): Promise<GeneratedNovel> {
-  ensureAi();
   const { topic, genres = [], toneHints = 'sủng ngọt, có twist ngược nhẹ' } = opts;
 
-  const prompt = `Bạn là tác giả truyện chữ tiếng Việt cực ăn khách trên các nền tảng như MetruyenChu.
+  const prompt = `Bạn là tác giả truyện chữ tiếng Việt cực ăn khách trên các nền tảng như Truyen24h, Metruyenchu.
 Hãy phát triển ý tưởng sau thành 1 bộ truyện mới có thể đăng dài 50-100 chương:
 
 Ý tưởng: ${topic}
 Thể loại gợi ý: ${genres.join(', ') || '(tự chọn)'}
 Tone: ${toneHints}
 
-YÊU CẦU đầu ra (JSON):
-- title: tiêu đề cuốn hút, 5-12 chữ, dễ Google.
-- author: tên bút danh nghe Việt (vd "Nguyệt Cầm", "Phong Linh"). KHÔNG dùng "AI" trong tên.
-- description: mô tả 4-6 câu, hook ở câu đầu, kết bằng câu mời gọi đọc tiếp.
-- genres: 2-4 thể loại từ thư viện chuẩn site VN.
-- status: "Đang ra".
-- hook: 1 câu < 25 chữ cho social media TikTok/Facebook.
-- tags: 5-7 long-tail keyword tiếng Việt (vd: "truyện trùng sinh báo thù chồng cũ").
-- coverPrompt: 1 đoạn ngắn tiếng Anh tả ảnh cover style anime / digital painting, mood, color palette.`;
+YÊU CẦU ĐẦU RA BẮT BUỘC: Trả DUY NHẤT một khối JSON hợp lệ theo cấu trúc:
+{
+  "title": "tiêu đề cuốn hút 5-12 chữ, dễ nhớ",
+  "author": "tên bút danh thuần Việt (vd: Nguyệt Cầm, Phong Linh, Ám Dạ), TUYỆT ĐỐI KHÔNG dùng từ AI",
+  "description": "mô tả tóm tắt truyện 4-6 câu, có hook mạnh ở câu đầu, kết bằng lời kêu gọi đọc",
+  "genres": ["thể loại 1", "thể loại 2"],
+  "status": "Đang ra",
+  "hook": "1 câu marketing dưới 25 chữ cho TikTok/Facebook",
+  "tags": ["tag seo 1", "tag seo 2", "tag seo 3"],
+  "coverPrompt": "1 đoạn mô tả tiếng Anh chi tiết để vẽ ảnh bìa phong cách anime/digital painting, ánh sáng, góc máy"
+}`;
 
-  const response = await ai!.models.generateContent({
-    model: MODEL,
-    contents: prompt,
-    config: {
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          title: { type: Type.STRING },
-          author: { type: Type.STRING },
-          description: { type: Type.STRING },
-          genres: { type: Type.ARRAY, items: { type: Type.STRING } },
-          status: { type: Type.STRING },
-          hook: { type: Type.STRING },
-          tags: { type: Type.ARRAY, items: { type: Type.STRING } },
-          coverPrompt: { type: Type.STRING },
-        },
-        required: ['title', 'author', 'description', 'genres', 'status', 'hook', 'tags', 'coverPrompt'],
-      },
-    },
+  const res = await generateAIText({
+    prompt,
+    jsonMode: true,
   });
 
-  const out = JSON.parse(response.text || '{}') as GeneratedNovel;
-  // Normalize: keep only known genres so frontend filters work
+  const rawJson = cleanJson(res.text);
+  const out = JSON.parse(rawJson || '{}') as GeneratedNovel;
   out.genres = (out.genres || []).filter((g) => GENRES.includes(g));
   if (out.genres.length === 0 && genres.length) out.genres = genres.slice(0, 3);
+  if (out.genres.length === 0) out.genres = ['Huyền Huyễn', 'Trọng Sinh'];
   out.status = 'Đang ra';
   return out;
 }
@@ -220,20 +199,22 @@ Quy tắc bắt buộc:
 2. Chia đoạn dày, mỗi đoạn 2-5 câu. KHÔNG khối văn dài 20 câu.
 3. Bắt đầu bằng hook giữa hành động hoặc đối thoại, không miêu tả lê thê.
 4. Kết chương bằng 1 CLIFFHANGER kích thích đọc tiếp (twist nhỏ, câu hỏi treo, lựa chọn đột ngột).
-5. KHÔNG nhắc tên người dùng/AI/Gemini.
+5. KHÔNG nhắc tên người dùng/AI/Gemini/DeepSeek.
 6. KHÔNG xen chú thích.
 
-Trả JSON với:
-- title: tiêu đề chương (5-10 chữ, không cần "Chương X" prefix)
-- content: toàn bộ nội dung chương (string, dùng \\n\\n giữa các đoạn)
-- cliffhanger: 1 câu tóm tắt cliffhanger cuối chương để dùng cho chương kế`;
+BẮT BUỘC trả JSON với format:
+{
+  "title": "tiêu đề chương (5-10 chữ, không cần prefix Chương X)",
+  "content": "toàn bộ nội dung chương văn bản tiếng Việt dài với nhiều đoạn cách nhau bởi \\n\\n",
+  "cliffhanger": "1 câu tóm tắt nút thắt hồi hộp cuối chương"
+}`;
 
   const res = await generateAIText({
     prompt,
     jsonMode: true,
   });
 
-  const rawJson = res.text.replace(/^```json\s*|^```\s*|```$/g, '').trim();
+  const rawJson = cleanJson(res.text);
   const out = JSON.parse(rawJson) as Omit<GeneratedChapter, 'wordCount'>;
   const wordCount = out.content ? out.content.trim().split(/\s+/).length : 0;
   return { ...out, wordCount };
@@ -242,15 +223,14 @@ Trả JSON với:
 /* ---------------- 4. SEO blog snippet ---------------- */
 
 export async function generateSeoBlurb(opts: { novelTitle: string; genres: string[]; description: string }): Promise<string> {
-  ensureAi();
   const prompt = `Viết đoạn giới thiệu SEO 80-120 từ cho truyện "${opts.novelTitle}" thể loại ${opts.genres.join(', ')}.
 Đoạn này dùng ở đầu trang truyện. Nhồi tự nhiên 2-3 keyword chính (vd: "đọc truyện ${opts.genres[0]?.toLowerCase()} hay 2026").
 Văn phong nói thẳng, không sáo rỗng, có 1 câu CTA cuối kêu gọi đọc miễn phí.
 
 Mô tả truyện: ${opts.description}`;
 
-  const response = await ai!.models.generateContent({ model: MODEL, contents: prompt });
-  return (response.text || '').trim();
+  const res = await generateAIText({ prompt });
+  return (res.text || '').trim();
 }
 
 /* ---------------- 5. Cover image prompt (used by /api/ai/generate-cover) ---------------- */
@@ -265,4 +245,4 @@ export function buildCoverImagePrompt(novel: GeneratedNovel): string {
   ].join(', ');
 }
 
-export const AI_SERVICE_READY = !!ai;
+export const AI_SERVICE_READY = true;

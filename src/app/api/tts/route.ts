@@ -9,7 +9,7 @@ export const maxDuration = 60;
 // In-memory rate limiting map (IP -> timestamps[])
 const rateLimitMap = new Map<string, number[]>();
 const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
-const MAX_REQUESTS_PER_WINDOW = 40; // 40 requests/min/IP
+const MAX_REQUESTS_PER_WINDOW = 60;
 
 function checkRateLimit(ip: string): boolean {
   const now = Date.now();
@@ -61,25 +61,50 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Configure Node-Edge-TTS
-    const tts = new EdgeTTS({
-      voice: 'vi-VN-HoaiMyNeural',
-      pitch: '+0Hz',
-      rate: '+0%',
-      volume: '+0%',
-    });
+    // 1. Try Microsoft EdgeTTS first
+    try {
+      const tts = new EdgeTTS({
+        voice: 'vi-VN-HoaiMyNeural',
+        pitch: '+0Hz',
+        rate: '+0%',
+        volume: '+0%',
+      });
 
-    tempFilePath = path.join(os.tmpdir(), `tts-${Date.now()}-${Math.random().toString(36).substring(7)}.mp3`);
+      tempFilePath = path.join(os.tmpdir(), `tts-${Date.now()}-${Math.random().toString(36).substring(7)}.mp3`);
+      await tts.ttsPromise(trimmed, tempFilePath);
+      const audioBuffer = fs.readFileSync(tempFilePath);
 
-    await tts.ttsPromise(trimmed, tempFilePath);
-    const audioBuffer = fs.readFileSync(tempFilePath);
+      return new NextResponse(audioBuffer, {
+        headers: {
+          'Content-Type': 'audio/mpeg',
+          'Cache-Control': 'public, max-age=31536000, immutable',
+        },
+      });
+    } catch (edgeError: any) {
+      console.warn('EdgeTTS failed, falling back to Google Translate TTS:', edgeError?.message || edgeError);
 
-    return new NextResponse(audioBuffer, {
-      headers: {
-        'Content-Type': 'audio/mpeg',
-        'Cache-Control': 'public, max-age=31536000, immutable',
-      },
-    });
+      // 2. High-reliability Fallback: Google Translate TTS (open, fast, no datacenter block)
+      const encoded = encodeURIComponent(trimmed.slice(0, 300));
+      const googleTtsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=vi&client=tw-ob&q=${encoded}`;
+      const resp = await fetch(googleTtsUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Referer': 'https://translate.google.com/',
+        },
+      });
+
+      if (resp.ok) {
+        const arrayBuf = await resp.arrayBuffer();
+        return new NextResponse(Buffer.from(arrayBuf), {
+          headers: {
+            'Content-Type': 'audio/mpeg',
+            'Cache-Control': 'public, max-age=31536000, immutable',
+          },
+        });
+      }
+
+      throw edgeError;
+    }
   } catch (error) {
     console.error('TTS API Error:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

@@ -31,6 +31,8 @@ function parseEmailList(value: string | undefined): Set<string> {
 function getServerAdminEmails(): Set<string> {
   const adminEmails = parseEmailList(process.env.ADMIN_EMAILS);
   if (adminEmails.size > 0) return adminEmails;
+  const nextPublicEmails = parseEmailList(process.env.NEXT_PUBLIC_ADMIN_EMAILS);
+  if (nextPublicEmails.size > 0) return nextPublicEmails;
   return parseEmailList(process.env.ADMIN_ALLOWED_EMAILS);
 }
 
