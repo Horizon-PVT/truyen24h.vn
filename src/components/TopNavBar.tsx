@@ -9,6 +9,7 @@ import MissionsModal from './MissionsModal';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
 import { isAdmin } from '@/lib/admin';
+import { resolveNovelCover } from '@/lib/covers';
 
 interface TopNavBarProps {
   activeTab: 'discover' | 'bookshelf' | 'leaderboard' | 'creator-studio';
@@ -97,7 +98,7 @@ export default function TopNavBar({
   };
 
   return (
-    <header className="sticky top-0 z-50 bg-surface/90 backdrop-blur-md border-b border-accent/10 shadow-sm">
+    <header className="sticky top-0 z-50 bg-[#0B0C10]/90 backdrop-blur-xl border-b border-white/[0.08] shadow-lg shadow-black/40">
       <div className="flex items-center justify-between w-full max-w-[1200px] px-4 lg:px-8 py-3 mx-auto">
         <div className="flex items-center gap-4 lg:gap-10">
           <Link href="/" onClick={() => onTabChange('discover')} className="flex items-center gap-2 text-primary cursor-pointer shrink-0">
@@ -119,7 +120,7 @@ export default function TopNavBar({
               <button 
                 onMouseEnter={() => setShowGenres(true)}
                 onMouseLeave={() => setShowGenres(false)}
-                className="flex items-center gap-1 px-4 py-2 rounded-full text-sm font-bold text-text-main transition-all duration-300 cursor-pointer hover:-translate-y-0.5 hover:bg-primary/10 hover:text-primary hover:shadow-sm"
+                className="flex items-center gap-1 px-4 py-2 rounded-full text-sm font-bold text-text-main transition-all duration-300 cursor-pointer hover:-translate-y-0.5 hover:bg-white/10 hover:text-amber-400 hover:shadow-sm"
               >
                 Thể loại <ChevronDown className="size-4 opacity-50" />
               </button>
@@ -147,7 +148,7 @@ export default function TopNavBar({
             </div>
 
             <div className="relative group">
-              <button className="flex items-center gap-1 px-4 py-2 rounded-full text-sm font-bold text-text-main transition-all duration-300 cursor-pointer hover:-translate-y-0.5 hover:bg-primary/10 hover:text-primary hover:shadow-sm">
+              <button className="flex items-center gap-1 px-4 py-2 rounded-full text-sm font-bold text-text-main transition-all duration-300 cursor-pointer hover:-translate-y-0.5 hover:bg-white/10 hover:text-amber-400 hover:shadow-sm">
                 Số chương <ChevronDown className="size-4 opacity-50" />
               </button>
               <div className="absolute top-full left-0 w-48 bg-surface shadow-2xl rounded-2xl py-2 border border-accent/10 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200">
@@ -171,14 +172,14 @@ export default function TopNavBar({
 
             <button 
               onClick={() => onTabChange('bookshelf')}
-              className={`px-4 py-2 rounded-full text-sm font-bold transition-all duration-300 cursor-pointer flex items-center hover:-translate-y-0.5 hover:shadow-sm ${activeTab === 'bookshelf' ? 'bg-primary/20 text-primary shadow-sm' : 'text-text-main hover:bg-primary/10 hover:text-primary'}`}
+              className={`px-4 py-2 rounded-full text-sm font-bold transition-all duration-300 cursor-pointer flex items-center hover:-translate-y-0.5 hover:shadow-sm ${activeTab === 'bookshelf' ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30 shadow-sm' : 'text-text-main hover:bg-white/10 hover:text-amber-400'}`}
             >
               Tủ sách
             </button>
 
             <button 
               onClick={() => onTabChange('leaderboard')}
-              className={`px-4 py-2 rounded-full text-sm font-bold transition-all duration-300 cursor-pointer flex items-center hover:-translate-y-0.5 hover:shadow-sm ${activeTab === 'leaderboard' ? 'bg-primary/20 text-primary shadow-sm' : 'text-text-main hover:bg-primary/10 hover:text-primary'}`}
+              className={`px-4 py-2 rounded-full text-sm font-bold transition-all duration-300 cursor-pointer flex items-center hover:-translate-y-0.5 hover:shadow-sm ${activeTab === 'leaderboard' ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30 shadow-sm' : 'text-text-main hover:bg-white/10 hover:text-amber-400'}`}
             >
               Bảng xếp hạng
             </button>
@@ -187,7 +188,7 @@ export default function TopNavBar({
 
         <div className="flex items-center gap-3 shrink-0">
           <div ref={searchContainerRef} className="relative hidden xl:block">
-            <form onSubmit={handleSearchSubmit} className="flex items-center bg-background-light rounded-full px-4 py-2 border border-accent/10 focus-within:border-primary/50 focus-within:bg-surface transition-all w-60 group">
+            <form onSubmit={handleSearchSubmit} className="flex items-center bg-white/[0.04] rounded-xl px-4 py-2 border border-white/10 focus-within:border-amber-400/50 focus-within:bg-white/[0.08] transition-all w-64 group">
               <Search className="size-4 text-muted group-focus-within:text-primary mr-2 shrink-0" />
               <input 
                 type="text" 
@@ -202,7 +203,7 @@ export default function TopNavBar({
 
             {showSearchDropdown && searchResults.length > 0 && (
               <div 
-                className="absolute top-full left-0 right-0 mt-2 bg-surface rounded-2xl shadow-2xl border border-accent/10 p-3 z-50 animate-in fade-in slide-in-from-top-2 duration-150 divide-y divide-accent/5 w-72"
+                className="absolute top-full left-0 right-0 mt-2 bg-[#12141D] rounded-2xl shadow-2xl border border-white/10 p-3 z-50 animate-in fade-in slide-in-from-top-2 duration-150 divide-y divide-white/[0.06] w-72"
               >
                 {searchResults.map((novel) => (
                   <Link
@@ -216,7 +217,7 @@ export default function TopNavBar({
                   >
                     <div className="w-9 h-12 rounded-lg overflow-hidden shrink-0 bg-background-light">
                       <img 
-                        src={novel.coverUrl || '/logo.jpg'} 
+                        src={resolveNovelCover(novel)} 
                         alt={novel.title} 
                         className="w-full h-full object-cover group-hover:scale-105 transition-transform" 
                       />
@@ -265,13 +266,13 @@ export default function TopNavBar({
 
                 {/* Chuông & Dark mode - Stack Vertical */}
                 <div className="flex flex-col gap-1 mx-1">
-                   <button className="relative p-1.5 rounded-full bg-background-light text-text-main hover:bg-primary/10 hover:text-primary border border-accent/10 flex items-center justify-center">
+                   <button className="relative p-1.5 rounded-full bg-background-light text-text-main hover:bg-white/10 hover:text-amber-400 border border-accent/10 flex items-center justify-center">
                      <Bell className="size-3.5" />
                      <span className="absolute top-0 right-0 size-2 bg-red-500 rounded-full border border-surface"></span>
                    </button>
                    <button 
                      onClick={onToggleDarkMode}
-                     className="p-1.5 rounded-full bg-background-light text-text-main hover:bg-primary/10 hover:text-primary border border-accent/10 flex items-center justify-center"
+                     className="p-1.5 rounded-full bg-background-light text-text-main hover:bg-white/10 hover:text-amber-400 border border-accent/10 flex items-center justify-center"
                      title={isDarkMode ? "Sáng" : "Tối"}
                    >
                      {isDarkMode ? <Sun className="size-3.5" /> : <Moon className="size-3.5" />}

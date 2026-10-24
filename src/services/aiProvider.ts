@@ -31,10 +31,12 @@ export interface GenerateTextResult {
   model: string;
 }
 
-export function getActiveProvider(): 'byteplus' | 'deepseek' | 'siliconflow' | 'openrouter' | 'gemini' {
+export function getActiveProvider(): 'byteplus' | 'deepseek' | 'siliconflow' | 'openrouter' | 'orcarouter' | 'nvidia' | 'gemini' {
   const p = (process.env.AI_PROVIDER || '').toLowerCase().trim();
   if (p === 'byteplus' || p === 'ark') return 'byteplus';
   if (p === 'deepseek' || p === 'siliconflow' || p === 'openrouter') return p;
+  if (p === 'orcarouter' || p === 'orca') return 'orcarouter';
+  if (p === 'nvidia' || p === 'nim') return 'nvidia';
   // If BYTEPLUS_API_KEY is present and no explicit provider is set, prefer byteplus
   if (process.env.BYTEPLUS_API_KEY || process.env.ARK_API_KEY) return 'byteplus';
   return 'gemini';
@@ -197,7 +199,53 @@ export async function generateAIText(options: GenerateTextOptions): Promise<Gene
     return { text, provider: 'openrouter', model };
   }
 
-  // 5. Google Gemini Provider (Default)
+  // 5. OrcaRouter Provider (Free deepseek-v4, hy4, glm-5.3)
+  if (provider === 'orcarouter') {
+    const apiKey = process.env.ORCAROUTER_API_KEY;
+    if (!apiKey) {
+      throw new Error('ORCAROUTER_API_KEY is not set in environment.');
+    }
+    const baseUrl = process.env.ORCAROUTER_BASE_URL || 'https://api.orcarouter.ai/v1';
+    const model = options.modelOverride || process.env.ORCAROUTER_MODEL || 'deepseek/deepseek-v4.1-flash-free';
+    const text = await callOpenAICompatible({
+      baseUrl,
+      apiKey,
+      model,
+      prompt: options.prompt,
+      systemInstruction: options.systemInstruction,
+      temperature: options.temperature,
+      maxTokens: options.maxTokens,
+      jsonMode: options.jsonMode,
+      extraHeaders: {
+        'HTTP-Referer': 'https://truyen24h.vn',
+        'X-Title': 'Truyen24h.vn',
+      },
+    });
+    return { text, provider: 'orcarouter', model };
+  }
+
+  // 6. NVIDIA NIM Provider
+  if (provider === 'nvidia') {
+    const apiKey = process.env.NVIDIA_API_KEY;
+    if (!apiKey) {
+      throw new Error('NVIDIA_API_KEY is not set in environment.');
+    }
+    const baseUrl = process.env.NVIDIA_BASE_URL || 'https://integrate.api.nvidia.com/v1';
+    const model = options.modelOverride || process.env.NVIDIA_MODEL || 'nvidia/nemotron-3.5-super-vl-120b-a12b';
+    const text = await callOpenAICompatible({
+      baseUrl,
+      apiKey,
+      model,
+      prompt: options.prompt,
+      systemInstruction: options.systemInstruction,
+      temperature: options.temperature,
+      maxTokens: options.maxTokens,
+      jsonMode: options.jsonMode,
+    });
+    return { text, provider: 'nvidia', model };
+  }
+
+  // 7. Google Gemini Provider (Default)
   const geminiKey = process.env.GEMINI_API_KEY;
   if (!geminiKey) {
     throw new Error('GEMINI_API_KEY is not set in environment.');

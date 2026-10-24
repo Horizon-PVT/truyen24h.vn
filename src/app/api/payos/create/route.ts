@@ -30,13 +30,13 @@ export const dynamic = 'force-dynamic';
  * Coins = base + bonus pre-computed here so the client can't inflate it.
  */
 const CATALOG: Record<string, { vnd: number; coins: number; isMonthly?: boolean }> = {
-  pack0: { vnd: 5000, coins: 70 },        // 60 + 10 starter
-  pack1: { vnd: 10000, coins: 100 },
-  pack2: { vnd: 20000, coins: 220 },      // 200 + 20 popular
-  pack3: { vnd: 50000, coins: 600 },      // 500 + 100
-  monthly: { vnd: 99000, coins: 1800, isMonthly: true }, // 1500 + 300 + 30d VIP
-  pack4: { vnd: 100000, coins: 1300 },    // 1000 + 300
-  pack5: { vnd: 200000, coins: 2800 },    // 2000 + 800 VIP
+  pack0: { vnd: 10000, coins: 100 },
+  pack1: { vnd: 20000, coins: 300 },
+  pack2: { vnd: 50000, coins: 850 },
+  monthly: { vnd: 99000, coins: 2000, isMonthly: true },
+  pack3: { vnd: 100000, coins: 1800 },
+  pack4: { vnd: 200000, coins: 4500 },
+  pack5: { vnd: 500000, coins: 12500 },
 };
 
 export async function POST(request: Request) {

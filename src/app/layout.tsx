@@ -60,6 +60,7 @@ export const metadata: Metadata = {
 
 import CommunityWidget from "@/components/CommunityWidget";
 import Footer from "@/components/Footer";
+import MobileBottomNav from "@/components/MobileBottomNav";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { OrganizationJsonLd, WebSiteJsonLd } from "@/components/JsonLd";
 import Analytics from "@/components/Analytics";
@@ -99,6 +100,7 @@ export default function RootLayout({
         <AuthProvider>
           {children}
           <Footer />
+          <MobileBottomNav />
           <CommunityWidget />
           <Analytics />
         </AuthProvider>

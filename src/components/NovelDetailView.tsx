@@ -8,6 +8,7 @@ import { collection, query, orderBy, onSnapshot, doc, getDoc } from 'firebase/fi
 import { getAIRecommendations, getNovelSummary } from '../services/geminiService';
 import { useAuth } from '@/contexts/AuthContext';
 import { isPublicItem } from '../lib/visibilityGuard';
+import { resolveNovelCover } from '@/lib/covers';
 
 type ResumeProgress = {
   lastChapterId?: string;
@@ -91,7 +92,7 @@ function ChapterListPanel({ allChapters, onChapterSelect }: { allChapters: Chapt
         {search && (
           <button
             onClick={() => setSearch('')}
-            className="absolute right-4 top-1/2 -translate-y-1/2 text-muted hover:text-text-main transition-colors"
+            className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white transition-colors"
           >
             ✕
           </button>
@@ -100,7 +101,7 @@ function ChapterListPanel({ allChapters, onChapterSelect }: { allChapters: Chapt
 
       {/* Scrollable chapter list - fixed height */}
       <div
-        className="h-[600px] overflow-y-auto rounded-[28px] border border-accent/5 bg-surface shadow-2xl"
+        className="h-[600px] overflow-y-auto rounded-3xl border border-white/[0.08] glass-panel shadow-2xl"
         style={{ scrollbarWidth: 'thin', scrollbarColor: 'rgba(var(--primary-rgb, 200,80,80),0.3) transparent' }}
       >
         {filtered.length === 0 ? (
@@ -114,7 +115,7 @@ function ChapterListPanel({ allChapters, onChapterSelect }: { allChapters: Chapt
               <div
                 key={chapter.id}
                 onClick={() => onChapterSelect(chapter)}
-                className="flex items-center justify-between px-6 py-4 hover:bg-primary/5 cursor-pointer transition-all border-b border-accent/5 last:border-b-0 group"
+                className="flex items-center justify-between px-6 py-4 hover:bg-white/[0.04] cursor-pointer transition-all border-b border-white/[0.06] last:border-b-0 group"
               >
                 <div className="flex flex-col min-w-0 flex-1 mr-3">
                   <span className="font-bold text-sm text-text-main group-hover:text-primary transition-colors truncate">
@@ -350,15 +351,15 @@ export default function NovelDetailView({ novel, onChapterSelect, onNovelSelect,
   }, [limitedNovels, novel]);
 
   const getCoverUrl = (url: string | undefined, id: string) => {
-    return url || `https://picsum.photos/seed/novel-${id}/400/600`;
+    return resolveNovelCover({ id, coverUrl: url });
   };
 
   const coverUrl = getCoverUrl(novel.coverUrl, novel.id);
   const bannerUrl = novel.bannerUrl || coverUrl;
 
   return (
-    <div className="w-full bg-background-light min-h-screen">
-      <div className="relative w-full h-[580px] overflow-hidden bg-background-dark">
+    <div className="w-full bg-[#0B0C10] text-slate-100 min-h-screen">
+      <div className="relative w-full h-[580px] overflow-hidden bg-[#07080B]">
         <div 
           className="absolute inset-0 bg-cover bg-center blur-3xl opacity-40 scale-110" 
           style={{ backgroundImage: `url('${bannerUrl}')` }}
@@ -422,7 +423,7 @@ export default function NovelDetailView({ novel, onChapterSelect, onNovelSelect,
             <div className="flex flex-col sm:flex-row flex-wrap items-center gap-3 md:gap-6">
               <button 
                 onClick={() => primaryChapter && onChapterSelect(primaryChapter)}
-                className="flex items-center justify-center h-12 px-6 md:h-16 md:px-12 bg-primary text-white rounded-full font-black text-xs md:text-sm tracking-widest uppercase hover:opacity-90 transition-all shadow-2xl shadow-primary/30 transform hover:-translate-y-1 w-full sm:w-auto"
+                className="gold-gradient-btn flex items-center justify-center h-12 px-6 md:h-16 md:px-12 rounded-2xl font-black text-xs md:text-sm tracking-widest uppercase transition-all shadow-xl shadow-amber-500/30 transform hover:-translate-y-1 w-full sm:w-auto gap-2"
               >
                 {primaryCtaLabel}
               </button>
@@ -454,7 +455,7 @@ export default function NovelDetailView({ novel, onChapterSelect, onNovelSelect,
                       handleFirestoreError(error, OperationType.WRITE, path);
                     }
                   }}
-                  className="flex items-center justify-center h-12 px-6 md:h-16 md:px-12 bg-surface border-2 border-accent/10 text-text-main rounded-full font-black text-xs md:text-sm tracking-widest uppercase hover:border-primary/40 transition-all gap-2 md:gap-3 shadow-xl flex-1"
+                  className="flex items-center justify-center h-12 px-6 md:h-16 md:px-12 bg-white/5 border border-white/10 text-white rounded-2xl font-black text-xs md:text-sm tracking-widest uppercase hover:border-amber-400/40 hover:bg-white/10 transition-all gap-2 md:gap-3 shadow-xl flex-1"
                 >
                   <BookmarkPlus className="size-4 md:size-6" />
                   <span className="hidden sm:inline">Thêm vào tủ sách</span>
@@ -486,7 +487,7 @@ export default function NovelDetailView({ novel, onChapterSelect, onNovelSelect,
                 <div className="absolute top-6 right-6 bg-green-500 text-white px-5 py-1.5 rounded-full text-xs font-black uppercase shadow-2xl tracking-widest">Full</div>
               )}
             </div>
-            <div className="mt-12 flex flex-col gap-8 bg-surface p-10 rounded-[40px] border border-accent/10 shadow-2xl">
+            <div className="mt-12 flex flex-col gap-6 glass-panel p-8 rounded-3xl border border-white/[0.08] shadow-2xl">
               <div className="flex justify-between items-center border-b border-accent/5 pb-6">
                 <div className="flex items-center gap-4">
                   <BookOpen className="size-6 text-muted" />
@@ -507,7 +508,7 @@ export default function NovelDetailView({ novel, onChapterSelect, onNovelSelect,
                   <span className="text-muted text-sm font-bold uppercase tracking-widest">Đánh giá</span>
                 </div>
                 <span className="font-black text-text-main font-display text-2xl flex items-center gap-2">
-                  {novel.rating} <Star className="size-5 text-primary fill-primary" />
+                  {novel.rating} <Star className="size-5 text-amber-400 fill-amber-400" />
                 </span>
               </div>
             </div>
@@ -517,19 +518,19 @@ export default function NovelDetailView({ novel, onChapterSelect, onNovelSelect,
             <div className="flex gap-5 md:gap-16 border-b border-accent/10 mb-10 md:mb-16 overflow-x-auto no-scrollbar">
               <button 
                 onClick={() => setActiveTab('info')}
-                className={`pb-4 md:pb-8 font-display font-black text-lg md:text-3xl transition-all relative shrink-0 -mb-[4px] uppercase tracking-tighter ${activeTab === 'info' ? 'text-text-main border-b-4 border-primary' : 'text-muted hover:text-text-main'}`}
+                className={`pb-4 md:pb-8 font-display font-black text-lg md:text-3xl transition-all relative shrink-0 -mb-[4px] uppercase tracking-tighter ${activeTab === 'info' ? 'text-amber-400 border-b-2 border-amber-400 drop-shadow-[0_0_10px_rgba(245,158,11,0.5)]' : 'text-slate-400 hover:text-white'}`}
               >
                 Giới thiệu
               </button>
               <button 
                 onClick={() => setActiveTab('chapters')}
-                className={`pb-4 md:pb-8 font-display font-black text-lg md:text-3xl transition-all relative shrink-0 -mb-[4px] uppercase tracking-tighter ${activeTab === 'chapters' ? 'text-text-main border-b-4 border-primary' : 'text-muted hover:text-text-main'}`}
+                className={`pb-4 md:pb-8 font-display font-black text-lg md:text-3xl transition-all relative shrink-0 -mb-[4px] uppercase tracking-tighter ${activeTab === 'chapters' ? 'text-amber-400 border-b-2 border-amber-400 drop-shadow-[0_0_10px_rgba(245,158,11,0.5)]' : 'text-slate-400 hover:text-white'}`}
               >
                 Danh sách chương
               </button>
               <button 
                 onClick={() => setActiveTab('comments')}
-                className={`pb-4 md:pb-8 font-display font-black text-lg md:text-3xl transition-all relative shrink-0 -mb-[4px] uppercase tracking-tighter flex items-center gap-3 ${activeTab === 'comments' ? 'text-text-main border-b-4 border-primary' : 'text-muted hover:text-text-main'}`}
+                className={`pb-4 md:pb-8 font-display font-black text-lg md:text-3xl transition-all relative shrink-0 -mb-[4px] uppercase tracking-tighter flex items-center gap-3 ${activeTab === 'comments' ? 'text-amber-400 border-b-2 border-amber-400 drop-shadow-[0_0_10px_rgba(245,158,11,0.5)]' : 'text-slate-400 hover:text-white'}`}
               >
                 Bình luận
               </button>
@@ -537,7 +538,7 @@ export default function NovelDetailView({ novel, onChapterSelect, onNovelSelect,
             
             {activeTab === 'info' && (
               <>
-                <div className="bg-surface p-12 rounded-[40px] border border-accent/5 shadow-2xl mb-12">
+                <div className="glass-panel p-8 md:p-10 rounded-3xl border border-white/[0.08] shadow-2xl mb-12">
                   <div className="prose prose-2xl dark:prose-invert max-w-none text-text-main/80 font-medium leading-relaxed">
                     <p className="first-letter:text-7xl first-letter:font-black first-letter:text-primary first-letter:mr-3 first-letter:float-left">{novel.description}</p>
                   </div>
@@ -693,7 +694,7 @@ export default function NovelDetailView({ novel, onChapterSelect, onNovelSelect,
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => !isProcessing && setShowDonateModal(false)}></div>
           <div className="relative w-full max-w-sm bg-surface rounded-[40px] shadow-2xl border border-accent/10 p-10 animate-in zoom-in-95 duration-300">
-            <button onClick={() => !isProcessing && setShowDonateModal(false)} className="absolute top-6 right-6 p-2 bg-background-light rounded-full text-muted hover:text-text-main transition-colors">
+            <button onClick={() => !isProcessing && setShowDonateModal(false)} className="absolute top-6 right-6 p-2 bg-background-light rounded-full text-slate-400 hover:text-white transition-colors">
               <ChevronRight className="size-6 rotate-180" />
             </button>
             <div className="size-16 bg-pink-500/10 text-pink-500 rounded-2xl flex items-center justify-center mb-6 mx-auto">
