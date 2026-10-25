@@ -11,7 +11,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const baseUrl = getSiteUrl();
   const now = new Date();
 
-  // 1. Static Core Landing Pages
+  // 1. Static Core Canonical Landing Pages
   const staticPages: MetadataRoute.Sitemap = [
     { url: baseUrl, lastModified: now, changeFrequency: 'daily', priority: 1.0 },
     { url: `${baseUrl}/bang-xep-hang`, lastModified: now, changeFrequency: 'daily', priority: 0.9 },
@@ -24,33 +24,14 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     { url: `${baseUrl}/dieu-khoan-su-dung`, lastModified: now, changeFrequency: 'yearly', priority: 0.3 },
   ];
 
-  // 2. High-value Genre Landing Pages (SEO Discovery)
-  const genres = [
-    'huyen-huyen',
-    'tien-hiep',
-    'ngon-tinh',
-    'do-thi',
-    'he-thong',
-    'trong-sinh',
-    'cung-dau',
-    'gia-dau',
-    'kinh-di',
-    'mat-the',
-  ];
-  const genrePages: MetadataRoute.Sitemap = genres.map(g => ({
-    url: `${baseUrl}/tim-kiem?genre=${g}`,
-    lastModified: now,
-    changeFrequency: 'weekly',
-    priority: 0.7,
-  }));
-
-  // 3. Collect Novel Slugs (Merge Firestore + Fallback)
+  // 2. Collect Novel Slugs (Merge Firestore + Fallback with Canonical Slugs)
   const novelMap = new Map<string, { url: string; lastModified: Date; priority: number }>();
 
   // Add all curated fallback novels first
   for (const novel of FALLBACK_NOVELS) {
-    novelMap.set(novel.id, {
-      url: `${baseUrl}/truyen/${novel.id}`,
+    const slug = (novel as any).slug || novel.id;
+    novelMap.set(slug, {
+      url: `${baseUrl}/truyen/${slug}`,
       lastModified: new Date(novel.updatedAt || now),
       priority: 0.9,
     });
@@ -69,9 +50,10 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
         .filter((d: any) => isPublicItem(d.data()))
         .forEach((d: any) => {
           const data = d.data() as any;
+          const slug = data.slug || d.id;
           const ms = data.updatedAt?.toMillis?.() ?? Date.now();
-          novelMap.set(d.id, {
-            url: `${baseUrl}/truyen/${d.id}`,
+          novelMap.set(slug, {
+            url: `${baseUrl}/truyen/${slug}`,
             lastModified: new Date(ms),
             priority: 0.9,
           });
@@ -88,12 +70,13 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     priority: item.priority,
   }));
 
-  // 4. Sample Core Chapter Pages for Crawlers
+  // 3. Sample Core Chapter Pages for Crawlers (Unique & Verified Content)
   const chapterPages: MetadataRoute.Sitemap = [];
   for (const novel of FALLBACK_NOVELS) {
+    const slug = (novel as any).slug || novel.id;
     for (const chap of novel.chapters.slice(0, 3)) {
       chapterPages.push({
-        url: `${baseUrl}/doc/${novel.id}/${chap.id}`,
+        url: `${baseUrl}/doc/${slug}/${chap.id}`,
         lastModified: now,
         changeFrequency: 'weekly' as const,
         priority: 0.7,
@@ -101,5 +84,5 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     }
   }
 
-  return [...staticPages, ...genrePages, ...novelPages, ...chapterPages];
+  return [...staticPages, ...novelPages, ...chapterPages];
 }

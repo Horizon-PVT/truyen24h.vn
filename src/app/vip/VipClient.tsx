@@ -282,13 +282,17 @@ export default function VipClient() {
                       </div>
 
                       <div className="flex flex-col">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-baseline gap-2 flex-wrap">
                           <span className="text-xl font-black text-white font-display tracking-tight">
-                            {pack.totalCoins.toLocaleString('vi-VN')} Xu
+                            Tổng {pack.totalCoins.toLocaleString('vi-VN')} Xu
                           </span>
-                          {pack.bonus > 0 && (
-                            <span className="text-xs font-black text-emerald-400 bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.2 rounded-md">
-                              +{pack.bonus.toLocaleString('vi-VN')} Xu tặng
+                          {pack.bonus > 0 ? (
+                            <span className="text-xs font-bold text-slate-300">
+                              ({pack.coins.toLocaleString('vi-VN')} gốc + <span className="text-emerald-400 font-bold">+{pack.bonus.toLocaleString('vi-VN')} thưởng</span>)
+                            </span>
+                          ) : (
+                            <span className="text-xs font-bold text-slate-400">
+                              ({pack.coins.toLocaleString('vi-VN')} Xu gốc)
                             </span>
                           )}
                         </div>

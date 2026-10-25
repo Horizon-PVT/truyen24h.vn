@@ -30,7 +30,7 @@ export interface FallbackNovel {
   approvalStatus: string;
 }
 
-export const FALLBACK_NOVELS: FallbackNovel[] = [
+const BASE_FALLBACK_NOVELS: FallbackNovel[] = [
   {
     id: 'vo-than-chua-te',
     title: 'Võ Thần Chúa Tể',
@@ -998,6 +998,8 @@ function ensureNovelHasFullChapters(novel: FallbackNovel): FallbackNovel {
   }
   return novel;
 }
+
+export const FALLBACK_NOVELS: FallbackNovel[] = BASE_FALLBACK_NOVELS.map(ensureNovelHasFullChapters);
 
 export function getFallbackNovel(slug?: string): FallbackNovel {
   if (!slug) return ensureNovelHasFullChapters(FALLBACK_NOVELS[0]);
