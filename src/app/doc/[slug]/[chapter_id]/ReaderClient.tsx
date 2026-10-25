@@ -42,15 +42,17 @@ export default function ReaderClient({ novel, chapter }: { novel: any, chapter: 
     return () => unsub();
   }, [novel.id, chapter.id]);
 
+  const novelPath = novel.slug || novel.id;
+
   return (
     <>
       <ReaderView
         novel={novel}
         chapter={chapter}
-        onBack={() => router.push(`/truyen/${novel.id}`)}
+        onBack={() => router.push(`/truyen/${novelPath}`)}
         onLogin={loginWithGoogle}
         onChapterChange={(ch) => {
-           router.push(`/doc/${novel.id}/${ch.id}`);
+          router.push(`/doc/${novelPath}/${ch.id}`);
         }}
       />
       <ChapterComments novelId={novel.id} chapterId={chapter.id} onLogin={loginWithGoogle} />

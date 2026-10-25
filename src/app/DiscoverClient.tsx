@@ -9,7 +9,7 @@ export default function DiscoverClient() {
   return (
     <DiscoverView 
       onNovelSelect={(novel) => {
-        router.push(`/truyen/${novel.id}`);
+        router.push(`/truyen/${(novel as any).slug || novel.id}`);
       }}
     />
   );

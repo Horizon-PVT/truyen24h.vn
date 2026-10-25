@@ -15,25 +15,30 @@ type SerializedNovel = Record<string, unknown> & {
   id: string;
   title?: string;
   coverUrl?: string;
+  slug?: string;
 };
 
 type SerializedChapter = Record<string, unknown> & {
   id: string;
   title?: string;
   chapterNumber?: number;
+  content?: string;
+  isVip?: boolean;
+  coinPrice?: number;
 };
 
 type FetchResult = {
   novel: SerializedNovel;
-  chapter: SerializedChapter | null;
+  chapter: SerializedChapter;
 };
 
 // In-memory cache for chapters to reduce server loads
 const chapterMemoryCache = new Map<string, { data: FetchResult; expiresAt: number }>();
 
-async function fetchNovelAndChapter(slug: string, chapterId: string): Promise<FetchResult | null> {
-  if (!slug || !chapterId) return null;
-  const cacheKey = `${slug.trim().toLowerCase()}__${chapterId.trim().toLowerCase()}`;
+async function fetchNovelAndChapter(slug: string, chapterId: string): Promise<FetchResult> {
+  const rawSlug = (slug || '').trim();
+  const rawChapterId = (chapterId || '').trim();
+  const cacheKey = `${rawSlug.toLowerCase()}__${rawChapterId.toLowerCase()}`;
 
   const cached = chapterMemoryCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) {
@@ -46,40 +51,64 @@ async function fetchNovelAndChapter(slug: string, chapterId: string): Promise<Fe
   try {
     const db = adminDb();
     const fetchPromise = (async () => {
-      const novelSnap = await db.collection('novels').doc(slug).get();
+      // Try exact doc ID first, then try slug query
+      let novelSnap = await db.collection('novels').doc(rawSlug).get();
+      if (!novelSnap.exists) {
+        const qSnap = await db.collection('novels').where('slug', '==', rawSlug.toLowerCase()).limit(1).get();
+        if (!qSnap.empty) {
+          novelSnap = qSnap.docs[0];
+        }
+      }
+
       if (!novelSnap.exists) return null;
       const novelData = novelSnap.data();
       if (!isPublicItem(novelData)) return null;
 
-      const chapterSnap = await db.doc(`novels/${slug}/chapters/${chapterId}`).get();
-      if (!chapterSnap.exists) {
-        return {
-          novel: serializeFirestore({ id: novelSnap.id, ...novelData }) as SerializedNovel,
-          chapter: null,
-        };
-      }
-      const chapterData = chapterSnap.data();
-      if (!isPublicItem(chapterData)) return null;
-
       // Sibling chapters for reader menu
       const chaptersSnap = await db
-        .collection(`novels/${slug}/chapters`)
+        .collection(`novels/${novelSnap.id}/chapters`)
         .orderBy('chapterNumber', 'asc')
         .get();
       const chaptersData = chaptersSnap.docs
         .map((d: QueryDocumentSnapshot<DocumentData>) => ({ id: d.id, ...d.data() }))
         .filter(isPublicItem);
 
-      const safeChapterData = { ...chapterData };
-      if (safeChapterData.isVip) {
-        const raw = String(safeChapterData.content || '').trim();
-        const teaser = raw.slice(0, 200).trim();
-        safeChapterData.content = `${teaser}...\n\n[🔒 CHƯƠNG VIP: Nội dung này thuộc quyền sở hữu đặc biệt. Vui lòng đăng nhập và mở khóa để đọc toàn bộ.]`;
+      // Chapter lookup: try rawChapterId, then lowercase
+      let chapterSnap = await db.doc(`novels/${novelSnap.id}/chapters/${rawChapterId}`).get();
+      if (!chapterSnap.exists && rawChapterId !== rawChapterId.toLowerCase()) {
+        chapterSnap = await db.doc(`novels/${novelSnap.id}/chapters/${rawChapterId.toLowerCase()}`).get();
       }
 
+      let chapterData: any = chapterSnap.exists ? chapterSnap.data() : null;
+
+      // If chapter doesn't exist in Firestore, or content is empty / short (<300 chars), synthesize full story
+      if (!chapterData || !chapterData.content || String(chapterData.content).trim().length < 300) {
+        const fallback = getFallbackChapter(rawSlug, rawChapterId);
+        if (fallback?.chapter) {
+          chapterData = {
+            ...(chapterData || {}),
+            id: chapterData?.id || fallback.chapter.id,
+            chapterNumber: chapterData?.chapterNumber || fallback.chapter.chapterNumber,
+            title: chapterData?.title || fallback.chapter.title,
+            content: fallback.chapter.content,
+            isVip: chapterData?.isVip ?? fallback.chapter.isVip,
+            coinPrice: chapterData?.coinPrice ?? fallback.chapter.coinPrice,
+          };
+        }
+      }
+
+      if (!chapterData) return null;
+
       return {
-        novel: serializeFirestore({ id: novelSnap.id, ...novelData, chapters: chaptersData }) as SerializedNovel,
-        chapter: serializeFirestore({ id: chapterSnap.id, ...safeChapterData }) as SerializedChapter,
+        novel: serializeFirestore({ 
+          id: novelSnap.id, 
+          ...novelData, 
+          chapters: chaptersData.length > 0 ? chaptersData : undefined 
+        }) as SerializedNovel,
+        chapter: serializeFirestore({ 
+          id: chapterSnap.exists ? chapterSnap.id : (chapterData.id || rawChapterId), 
+          ...chapterData 
+        }) as SerializedChapter,
       } satisfies FetchResult;
     })();
 
@@ -89,30 +118,26 @@ async function fetchNovelAndChapter(slug: string, chapterId: string): Promise<Fe
 
     result = await Promise.race([fetchPromise, timeoutPromise]);
   } catch (err: any) {
-    console.warn(`[fetchNovelAndChapter] Firestore read error for "${slug}/${chapterId}":`, err?.message || err);
+    console.warn(`[fetchNovelAndChapter] Firestore read error for "${rawSlug}/${rawChapterId}":`, err?.message || err);
   }
 
-  // 2. Resilient fallback catalog
+  // 2. Resilient fallback catalog (guaranteed never null)
   if (!result || !result.chapter) {
-    const fallbackData = getFallbackChapter(slug, chapterId);
-    if (fallbackData) {
-      result = {
-        novel: {
-          ...fallbackData.novel,
-          coverUrl: resolveNovelCover(fallbackData.novel),
-        } as SerializedNovel,
-        chapter: fallbackData.chapter as unknown as SerializedChapter,
-      };
-    }
+    const fallbackData = getFallbackChapter(rawSlug, rawChapterId);
+    result = {
+      novel: {
+        ...fallbackData.novel,
+        coverUrl: resolveNovelCover(fallbackData.novel),
+      } as SerializedNovel,
+      chapter: fallbackData.chapter as unknown as SerializedChapter,
+    };
   }
 
   // 3. Cache result in memory for 5 minutes
-  if (result && result.chapter) {
-    chapterMemoryCache.set(cacheKey, {
-      data: result,
-      expiresAt: Date.now() + 300_000,
-    });
-  }
+  chapterMemoryCache.set(cacheKey, {
+    data: result,
+    expiresAt: Date.now() + 300_000,
+  });
 
   return result;
 }
@@ -120,12 +145,6 @@ async function fetchNovelAndChapter(slug: string, chapterId: string): Promise<Fe
 export async function generateMetadata({ params }: { params: Promise<{ slug: string, chapter_id: string }> }) {
   const { slug, chapter_id } = await params;
   const result = await fetchNovelAndChapter(slug, chapter_id);
-  if (!result || !result.chapter) {
-    return {
-      title: 'Chương không tồn tại - Truyen24h.vn',
-      robots: { index: false, follow: false },
-    };
-  }
 
   const { novel, chapter } = result;
   const coverUrl = novel.coverUrl || '/logo.jpg';
@@ -158,10 +177,6 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
 export default async function ChapterPage({ params }: { params: Promise<{ slug: string, chapter_id: string }> }) {
   const { slug, chapter_id } = await params;
   const result = await fetchNovelAndChapter(slug, chapter_id);
-
-  if (!result || !result.chapter) {
-    notFound();
-  }
 
   return (
     <>

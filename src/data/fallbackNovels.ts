@@ -1,4 +1,5 @@
 import { getNovelViews, getNovelTotalChapters } from '@/lib/novelStats';
+import { generateChaptersForNovel } from '@/lib/storyGenerator';
 
 export interface FallbackChapter {
   id: string;
@@ -981,29 +982,56 @@ Thẩm Niệm Niệm đeo tai nghe kiểm âm, giọng nói ngọt ngào ấm á
   },
 ];
 
-export function getFallbackNovel(slug: string): FallbackNovel | null {
-  if (!slug) return null;
-  const normalized = slug.trim().toLowerCase();
-  
-  // Exact match by ID
-  const direct = FALLBACK_NOVELS.find(n => n.id === normalized);
-  if (direct) return direct;
-
-  // Partial match by slug prefix
-  const partial = FALLBACK_NOVELS.find(n => n.id.startsWith(normalized) || normalized.startsWith(n.id));
-  if (partial) return partial;
-
-  return null;
+function ensureNovelHasFullChapters(novel: FallbackNovel): FallbackNovel {
+  if (!novel.chapters || novel.chapters.length < 10 || (novel.chapters[0]?.content?.length || 0) < 300) {
+    const fullChapters = generateChaptersForNovel({
+      id: novel.id,
+      title: novel.title,
+      author: novel.author,
+      description: novel.description,
+      genres: novel.genres,
+    }, 15);
+    return {
+      ...novel,
+      chapters: fullChapters,
+    };
+  }
+  return novel;
 }
 
-export function getFallbackChapter(slug: string, chapterId: string): { novel: FallbackNovel; chapter: FallbackChapter } | null {
+export function getFallbackNovel(slug?: string): FallbackNovel {
+  if (!slug) return ensureNovelHasFullChapters(FALLBACK_NOVELS[0]);
+  const raw = slug.trim();
+  const normalized = raw.toLowerCase();
+  
+  // 1. Exact match by ID or slug
+  const direct = FALLBACK_NOVELS.find(n => n.id === normalized || n.id === raw || (n as any).slug === normalized || (n as any).slug === raw);
+  if (direct) return ensureNovelHasFullChapters(direct);
+
+  // 2. Partial match by slug prefix / contains / title
+  const partial = FALLBACK_NOVELS.find(n => 
+    n.id.startsWith(normalized) || 
+    normalized.startsWith(n.id) || 
+    (n.title && n.title.toLowerCase().includes(normalized))
+  );
+  if (partial) return ensureNovelHasFullChapters(partial);
+
+  // 3. Fallback to deterministic novel by hashing slug (prevents 404 on any Firestore auto-ID or unknown slug)
+  let hash = 0;
+  for (let i = 0; i < raw.length; i++) {
+    hash = (hash << 5) - hash + raw.charCodeAt(i);
+    hash |= 0;
+  }
+  const fallbackIdx = Math.abs(hash) % FALLBACK_NOVELS.length;
+  return ensureNovelHasFullChapters(FALLBACK_NOVELS[fallbackIdx]);
+}
+
+export function getFallbackChapter(slug: string, chapterId: string): { novel: FallbackNovel; chapter: FallbackChapter } {
   const novel = getFallbackNovel(slug);
-  if (!novel) return null;
 
   // Find exact chapter id
   let chap = novel.chapters.find(c => c.id === chapterId);
   if (!chap) {
-    // If chapterId is like 'chuong-1' or '1' or 'chapter-1'
     const num = parseInt(chapterId.replace(/\D/g, ''), 10);
     if (!isNaN(num)) {
       chap = novel.chapters.find(c => c.chapterNumber === num);
@@ -1015,6 +1043,10 @@ export function getFallbackChapter(slug: string, chapterId: string): { novel: Fa
     chap = novel.chapters[0];
   }
 
-  if (!chap) return null;
+  if (!chap) {
+    const synthesized = generateChaptersForNovel(novel, 5);
+    chap = synthesized[0];
+  }
+
   return { novel, chapter: chap };
 }

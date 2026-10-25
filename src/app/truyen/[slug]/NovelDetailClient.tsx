@@ -14,16 +14,18 @@ export default function NovelDetailClient({ novel }: { novel: any }) {
     return onAuthStateChanged(auth, setUser);
   }, []);
 
+  const novelPath = novel?.slug || novel?.id;
+
   return (
     <NovelDetailView 
       novel={novel}
       user={user || null}
       onLogin={loginWithGoogle}
       onChapterSelect={(chapter) => {
-        router.push(`/doc/${novel.id}/${chapter.id}`);
+        router.push(`/doc/${novelPath}/${chapter.id}`);
       }}
       onNovelSelect={(n) => {
-        router.push(`/truyen/${n.id}`);
+        router.push(`/truyen/${(n as any)?.slug || n?.id}`);
       }}
     />
   );

@@ -21,7 +21,7 @@ export default function BookshelfPage() {
       <BookshelfView 
         user={user} 
         onLogin={loginWithGoogle} 
-        onNovelSelect={(novel) => router.push(`/truyen/${novel.id}`)} 
+        onNovelSelect={(novel) => router.push(`/truyen/${(novel as any).slug || novel.id}`)} 
       />
     </>
   );

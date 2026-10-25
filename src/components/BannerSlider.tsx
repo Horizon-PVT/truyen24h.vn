@@ -122,14 +122,14 @@ export default function BannerSlider({ novels }: BannerSliderProps) {
                 {/* CTA Action */}
                 <div className="flex items-center gap-4">
                   <Link 
-                    href={`/truyen/${novel.id}`} 
+                    href={`/truyen/${(novel as any).slug || novel.id}`} 
                     className="gold-gradient-btn px-6 sm:px-8 py-3 sm:py-3.5 rounded-xl font-black text-xs md:text-sm uppercase tracking-wider inline-flex items-center gap-2.5 shadow-lg shadow-amber-500/30 hover:shadow-amber-500/50"
                   >
                     <BookOpen className="size-4" />
                     <span>Đọc Ngay</span>
                   </Link>
                   <Link 
-                    href={`/truyen/${novel.id}`}
+                    href={`/truyen/${(novel as any).slug || novel.id}`}
                     className="px-5 py-3 rounded-xl font-bold text-xs md:text-sm text-slate-300 hover:text-white bg-white/5 hover:bg-white/10 border border-white/10 backdrop-blur-md transition-all hidden sm:inline-flex"
                   >
                     Chi tiết

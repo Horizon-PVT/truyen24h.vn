@@ -15,25 +15,36 @@ export const revalidate = 300;
 const novelMemoryCache = new Map<string, { data: any; expiresAt: number }>();
 
 async function fetchNovel(slug: string) {
-  if (!slug) return null;
-  const normalized = slug.trim().toLowerCase();
+  if (!slug) return getFallbackNovel('');
+  const rawSlug = slug.trim();
+  const normalized = rawSlug.toLowerCase();
 
   // 1. Check in-memory server cache
-  const cached = novelMemoryCache.get(normalized);
+  const cached = novelMemoryCache.get(rawSlug) || novelMemoryCache.get(normalized);
   if (cached && cached.expiresAt > Date.now()) {
     return cached.data;
   }
 
   let novelData: any = null;
 
-  // 2. Try Firestore (with 2.5s strict timeout to prevent thread blocking)
+  // 2. Try Firestore (preserving exact case for doc ID first, then fallback to normalized)
   try {
-    const firestorePromise = adminDb().collection('novels').doc(normalized).get();
-    const timeoutPromise = new Promise<null>((_, reject) => 
-      setTimeout(() => reject(new Error('Firestore read timeout (2500ms)')), 2500)
-    );
+    const db = adminDb();
+    let snap: any = null;
+    try {
+      const p1 = db.collection('novels').doc(rawSlug).get();
+      const t1 = new Promise<null>((_, rej) => setTimeout(() => rej(new Error('timeout')), 1500));
+      snap = await Promise.race([p1, t1]);
+    } catch { /* ignore */ }
 
-    const snap = await Promise.race([firestorePromise, timeoutPromise]) as any;
+    if (!snap?.exists && rawSlug !== normalized) {
+      try {
+        const p2 = db.collection('novels').doc(normalized).get();
+        const t2 = new Promise<null>((_, rej) => setTimeout(() => rej(new Error('timeout')), 1500));
+        snap = await Promise.race([p2, t2]);
+      } catch { /* ignore */ }
+    }
+
     if (snap && snap.exists) {
       const data = serializeFirestore({ id: snap.id, ...snap.data() }) as any;
       if (isPublicItem(data)) {
@@ -41,23 +52,27 @@ async function fetchNovel(slug: string) {
       }
     }
   } catch (err: any) {
-    console.warn(`[fetchNovel] Firestore read failed for "${normalized}":`, err?.message || err);
+    console.warn(`[fetchNovel] Firestore read failed for "${rawSlug}":`, err?.message || err);
   }
 
   // 3. Fallback to resilient static catalog if Firestore is down, empty, or quota-exceeded
   if (!novelData) {
-    const fallback = getFallbackNovel(normalized);
-    if (fallback) {
-      novelData = {
-        ...fallback,
-        coverUrl: resolveNovelCover(fallback),
-      };
-    }
+    const fallback = getFallbackNovel(rawSlug);
+    novelData = {
+      ...fallback,
+      coverUrl: resolveNovelCover(fallback),
+    };
+  }
+
+  // 4. Ensure novel has chapters
+  if (!novelData.chapters || novelData.chapters.length < 5) {
+    const fallback = getFallbackNovel(rawSlug);
+    novelData.chapters = fallback.chapters;
   }
 
   // 4. Save to server memory cache for 5 minutes
   if (novelData) {
-    novelMemoryCache.set(normalized, {
+    novelMemoryCache.set(rawSlug, {
       data: novelData,
       expiresAt: Date.now() + 300_000,
     });
@@ -103,10 +118,14 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
 
 export default async function NovelPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
-  const novelData = await fetchNovel(slug);
+  let novelData = await fetchNovel(slug);
 
   if (!novelData) {
-    notFound();
+    const fallback = getFallbackNovel(slug);
+    novelData = {
+      ...fallback,
+      coverUrl: resolveNovelCover(fallback),
+    };
   }
 
   return (

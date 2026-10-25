@@ -20,7 +20,7 @@ function TruyenContent() {
         initialGenre={genre} 
         initialChapters={chapters}
         initialSearch={q} 
-        onNovelSelect={(novel) => router.push(`/truyen/${novel.id}`)} 
+        onNovelSelect={(novel) => router.push(`/truyen/${(novel as any).slug || novel.id}`)} 
       />
     </>
   );
