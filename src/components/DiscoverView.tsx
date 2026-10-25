@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Novel } from '../types';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { collection, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
@@ -87,12 +87,52 @@ export default function DiscoverView({ onNovelSelect }: DiscoverViewProps) {
   };
 
   const allNovels = dynamicNovels.length > 0 ? dynamicNovels : (FALLBACK_NOVELS as unknown as Novel[]);
-  const hotNovels = allNovels.filter(n => n.isHot).slice(0, 10);
-  const fullNovels = allNovels.filter(n => n.isFull || n.status === 'Hoàn thành').slice(0, 8);
+
+  // 1. Hero Banner: Marquee 5 blockbuster novels across diverse genres
+  const bannerNovels = useMemo(() => {
+    const heroIds = [
+      'vo-than-chua-te',
+      'tong-tai-co-chap-vo-cu-lai-yeu-lan-nua-65wu',
+      'nu-phu-phan-cong-he-thong-nu-than-gioi-giai-tri-4w51',
+      'luan-hoi-chi-chu-tuoc-doat-van-gioi',
+      'tu-xuan',
+    ];
+    const picked = heroIds
+      .map(id => allNovels.find(n => n.id === id))
+      .filter((n): n is Novel => !!n);
+    if (picked.length >= 3) return picked;
+    const hot = allNovels.filter(n => n.isHot);
+    return hot.length > 0 ? hot.slice(0, 5) : allNovels.slice(0, 3);
+  }, [allNovels]);
+
+  // Exclude banner novels from immediate recommendation to avoid visual repetition at top of page
+  const bannerIdSet = useMemo(() => new Set(bannerNovels.map(n => n.id)), [bannerNovels]);
+
+  // 2. Section "Đề Cử Hôm Nay": 9 distinctive novels, excluding banner novels
+  const recommendedNovels = useMemo(() => {
+    const candidate = allNovels.filter(n => !bannerIdSet.has(n.id));
+    return candidate.length >= 9 ? candidate.slice(0, 9) : allNovels.slice(5, 14);
+  }, [allNovels, bannerIdSet]);
+
+  // 3. Section "Truyện Hot Tháng Này": 10 diverse novels from different genres
+  const hotNovels = useMemo(() => {
+    return allNovels.filter(n => n.isHot).slice(0, 10);
+  }, [allNovels]);
+
+  // 4. Section "Truyện Hoàn Thành": Filter strictly completed novels
+  const fullNovels = useMemo(() => {
+    return allNovels.filter(n => n.isFull || n.status === 'Hoàn thành').slice(0, 8);
+  }, [allNovels]);
+
+  // 5. Section "Mới Cập Nhật": All novels paginated
   const latestUpdates = allNovels;
-  const leaderboardNovels = [...allNovels]
-    .sort((a, b) => getNovelViews(b) - getNovelViews(a))
-    .slice(0, 10);
+
+  // 6. Section "Bảng Xếp Hạng": Top novels sorted by views
+  const leaderboardNovels = useMemo(() => {
+    return [...allNovels]
+      .sort((a, b) => getNovelViews(b) - getNovelViews(a))
+      .slice(0, 10);
+  }, [allNovels]);
 
   if (loading && dynamicNovels.length === 0 && FALLBACK_NOVELS.length === 0) {
     return (
@@ -145,7 +185,7 @@ export default function DiscoverView({ onNovelSelect }: DiscoverViewProps) {
     <main className="w-full max-w-[1240px] px-3 sm:px-4 md:px-8 pb-32 md:pb-24 flex flex-col gap-8 md:gap-16 mx-auto pt-3 md:pt-8 bg-[#0B0C10] text-slate-100">
       
       {/* 1. Hero Banner Carousel */}
-      <BannerSlider novels={allNovels} />
+      <BannerSlider novels={bannerNovels} />
       
       {/* 2. Mobile Quick Genre Scroll Pills */}
       <section className="md:hidden -mt-2">
@@ -200,7 +240,7 @@ export default function DiscoverView({ onNovelSelect }: DiscoverViewProps) {
             </div>
             
             <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-              {allNovels.slice(recommendationPage * 3, recommendationPage * 3 + 3).map((novel, index) => (
+              {recommendedNovels.slice(recommendationPage * 3, recommendationPage * 3 + 3).map((novel, index) => (
                 <div 
                   key={novel.id || index}
                   onClick={() => onNovelSelect(novel)}

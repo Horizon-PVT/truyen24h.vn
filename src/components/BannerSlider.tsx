@@ -13,7 +13,7 @@ export default function BannerSlider({ novels }: BannerSliderProps) {
   const [currentIndex, setCurrentIndex] = useState(0);
 
   const hotNovels = novels.filter(n => n.isHot);
-  const bannerNovels = hotNovels.length > 0 ? hotNovels.slice(0, 5) : novels.slice(0, 3);
+  const bannerNovels = novels.length <= 5 && novels.length > 0 ? novels : (hotNovels.length > 0 ? hotNovels.slice(0, 5) : novels.slice(0, 3));
 
   useEffect(() => {
     if (bannerNovels.length <= 1) return;

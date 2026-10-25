@@ -11,37 +11,55 @@ export const SLUG_COVER_MAP: Record<string, string> = {
   'tong-tai-co-chap-vo-cu-lai-yeu-lan-nua-65wu': '/covers/tong-tai-co-chap.jpg',
   'nu-phu-phan-cong-he-thong-nu-than-gioi-giai-tri-4w51': '/covers/nu-phu-phan-cong.jpg',
 
-  // Xianxia & Fantasy (Batch 1)
+  // Xianxia & Fantasy
   'yeu-than-giang-the': '/covers/cover-yeu-than.jpg',
   'muc-than-ky': '/covers/cover-muc-than.jpg',
   'nhat-niem-vinh-hang': '/covers/cover-vinh-hang.jpg',
   'nghich-menh-thanh-ma': '/covers/cover-nghich-menh.jpg',
   'nhat-niem-thanh-tien-nhat-niem-thanh-ma': '/covers/cover-tien-ma.jpg',
+  'dao-gioi-thien-ha': '/covers/cover-tien-ma.jpg',
+  'de-ba': '/covers/genre-tienhiep.jpg',
+  'pham-nhan-tu-tien': '/covers/genre-huyenhuyen.jpg',
 
-  // Drama, Reincarnation & Romance (Batch 2)
+  // Gaming, Sci-Fi & Apocalypse
   'luan-hoi-chi-chu-tuoc-doat-van-gioi': '/covers/cover-luan-hoi.jpg',
+  'toan-chuc-cao-thu': '/covers/genre-vongdu.jpg',
+  'thon-phe-tinh-khong': '/covers/genre-vongdu.jpg',
+  'toan-cau-bang-phong-ta-che-tao-ham-tru-an': '/covers/genre-matthe.jpg',
+  'ta-o-tan-the-nhat-thuoc-tin': '/covers/genre-hethong.jpg',
+  'ta-o-tan-the-nhat-thuoc-tinh': '/covers/genre-hethong.jpg',
+
+  // Drama, Reincarnation & Romance
   'tu-xuan': '/covers/cover-tu-xuan.jpg',
   'trong-sinh-ta-khong-lam-oan-gia': '/covers/cover-trong-sinh-oan-gia.jpg',
   'dai-ca-nhat-quyet-cuoi-ky-nu-ta-thanh-toan-cho-han-ca-doi-phai-hoi-han': '/covers/cover-dai-ca-cuoi-ky-nu.jpg',
   'thi-the-cua-ta-buong-tha-phong-tung-khong-kiem-che-duoc': '/covers/cover-thi-the.jpg',
   'vao-ngay-thu-100-ly-hon-toi-chet-tren-ban-mo-cua-nguoi-chong-yeu-dau': '/covers/cover-100-ngay-ly-hon.jpg',
+  'toan-cau-cao-vo': '/covers/genre-dothi.jpg',
+  'quy-bi-chi-chu': '/covers/genre-kinhdi.jpg',
+  'phuong-nghich-thien-ha': '/covers/genre-codai.jpg',
+  'anh-trang-khong-bang-em': '/covers/cover-tu-xuan.jpg',
+  'thu-nu-thich-hong-chuyen': '/covers/cover-trong-sinh-oan-gia.jpg',
+  'thap-nien-80-thien-kim-that-hieu-thu-ngu': '/covers/genre-dothi.jpg',
 };
 
 export const GENRE_COVER_MAP: Record<string, string> = {
   'Kinh Dị': '/covers/genre-kinhdi.jpg',
   'Đô Thị': '/covers/genre-dothi.jpg',
-  'Ngôn Tình': '/covers/genre-dothi.jpg',
-  'Chữa Lành': '/covers/cover-100-ngay-ly-hon.jpg',
-  'Cổ Đại': '/covers/cover-trong-sinh-oan-gia.jpg',
+  'Ngôn Tình': '/covers/cover-100-ngay-ly-hon.jpg',
+  'Chữa Lành': '/covers/cover-tu-xuan.jpg',
+  'Cổ Đại': '/covers/genre-codai.jpg',
   'Trọng Sinh': '/covers/cover-trong-sinh-oan-gia.jpg',
   'Gia Đấu': '/covers/cover-dai-ca-cuoi-ky-nu.jpg',
   'Cung Đấu': '/covers/cover-tu-xuan.jpg',
-  'Tiên Hiệp': '/covers/cover-muc-than.jpg',
+  'Tiên Hiệp': '/covers/genre-tienhiep.jpg',
   'Kiếm Hiệp': '/covers/cover-tien-ma.jpg',
-  'Huyền Huyễn': '/covers/cover-yeu-than.jpg',
+  'Huyền Huyễn': '/covers/genre-huyenhuyen.jpg',
   'Hệ Thống': '/covers/genre-hethong.jpg',
-  'Mạt Thế': '/covers/cover-nghich-menh.jpg',
-  'Võng Du': '/covers/cover-luan-hoi.jpg',
+  'Mạt Thế': '/covers/genre-matthe.jpg',
+  'Võng Du': '/covers/genre-vongdu.jpg',
+  'Khoa Huyễn': '/covers/genre-vongdu.jpg',
+  'Dị Giới': '/covers/cover-yeu-than.jpg',
 };
 
 export const DIVERSE_COVERS = [
@@ -60,6 +78,14 @@ export const DIVERSE_COVERS = [
   '/covers/dem-trang-muong-ba-li.jpg',
   '/covers/tong-tai-co-chap.jpg',
   '/covers/nu-phu-phan-cong.jpg',
+  '/covers/genre-kinhdi.jpg',
+  '/covers/genre-dothi.jpg',
+  '/covers/genre-codai.jpg',
+  '/covers/genre-hethong.jpg',
+  '/covers/genre-tienhiep.jpg',
+  '/covers/genre-huyenhuyen.jpg',
+  '/covers/genre-vongdu.jpg',
+  '/covers/genre-matthe.jpg',
 ];
 
 export function getHashCover(str: string): string {
@@ -176,6 +202,33 @@ export function resolveNovelCover(novel?: NovelLike | null): string {
   }
   if (titleNorm.includes('100') || titleNorm.includes('ly hon') || titleNorm.includes('ban mo')) {
     return '/covers/cover-100-ngay-ly-hon.jpg';
+  }
+  if (titleNorm.includes('quy bi')) {
+    return '/covers/genre-kinhdi.jpg';
+  }
+  if (titleNorm.includes('cao vo')) {
+    return '/covers/genre-dothi.jpg';
+  }
+  if (titleNorm.includes('toan chuc')) {
+    return '/covers/genre-vongdu.jpg';
+  }
+  if (titleNorm.includes('pham nhan')) {
+    return '/covers/genre-huyenhuyen.jpg';
+  }
+  if (titleNorm.includes('de ba')) {
+    return '/covers/genre-tienhiep.jpg';
+  }
+  if (titleNorm.includes('bang phong') || titleNorm.includes('tan the')) {
+    return '/covers/genre-matthe.jpg';
+  }
+  if (titleNorm.includes('phuong nghich')) {
+    return '/covers/genre-codai.jpg';
+  }
+  if (titleNorm.includes('thon phe')) {
+    return '/covers/genre-vongdu.jpg';
+  }
+  if (titleNorm.includes('dao gioi')) {
+    return '/covers/cover-tien-ma.jpg';
   }
 
   for (const [key, cover] of Object.entries(SLUG_COVER_MAP)) {

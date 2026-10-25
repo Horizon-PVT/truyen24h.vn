@@ -355,7 +355,7 @@ export default function NovelDetailView({ novel, onChapterSelect, onNovelSelect,
     return resolveNovelCover({ id, coverUrl: url });
   };
 
-  const coverUrl = getCoverUrl(novel.coverUrl, novel.id);
+  const coverUrl = resolveNovelCover(novel);
   const bannerUrl = novel.bannerUrl || coverUrl;
 
   return (
