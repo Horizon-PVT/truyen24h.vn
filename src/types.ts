@@ -37,6 +37,7 @@ export interface Novel {
   isFull?: boolean;
   translationGroup?: string;
   latestChapterNumber?: number;
+  totalChapters?: number;
   aiAssisted?: boolean;
   worldSetting?: string;
   lorebook?: LorebookEntry[];

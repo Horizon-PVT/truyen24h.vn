@@ -38,7 +38,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     'mat-the',
   ];
   const genrePages: MetadataRoute.Sitemap = genres.map(g => ({
-    url: `${baseUrl}/tim-kiem?the-loai=${g}`,
+    url: `${baseUrl}/tim-kiem?genre=${g}`,
     lastModified: now,
     changeFrequency: 'weekly',
     priority: 0.7,

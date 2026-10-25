@@ -6,8 +6,9 @@ import Pagination from './Pagination';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { collection, query, onSnapshot, orderBy } from 'firebase/firestore';
 import { isPublicItem } from '../lib/visibilityGuard';
-import { formatViews } from '@/lib/novelStats';
+import { formatViews, getNovelTotalChapters } from '@/lib/novelStats';
 import { FALLBACK_NOVELS } from '@/data/fallbackNovels';
+import { resolveNovelCover } from '@/lib/covers';
 
 interface FilterViewProps {
   initialGenre?: string;
@@ -16,10 +17,11 @@ interface FilterViewProps {
   onNovelSelect: (novel: Novel) => void;
 }
 
-const ITEMS_PER_PAGE = 10;
+const ITEMS_PER_PAGE = 12;
 
 function normalize(text: string) {
-  return text.toLowerCase()
+  return text
+    .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/đ/g, 'd')
@@ -27,34 +29,77 @@ function normalize(text: string) {
     .trim();
 }
 
+export function slugifyGenre(text: string): string {
+  return text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D')
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+export function resolveGenreName(input?: string): string {
+  if (!input || input === 'Tất cả' || input === 'all') return 'Tất cả';
+  const clean = input.trim();
+  const slug = slugifyGenre(clean);
+
+  // Exact match in GENRES
+  const exact = GENRES.find(g => g.toLowerCase() === clean.toLowerCase());
+  if (exact) return exact;
+
+  // Slug match in GENRES (e.g. 'huyen-huyen' -> 'Huyền Huyễn')
+  const bySlug = GENRES.find(g => slugifyGenre(g) === slug);
+  if (bySlug) return bySlug;
+
+  // Normalized match
+  const byNorm = GENRES.find(g => normalize(g) === normalize(clean));
+  if (byNorm) return byNorm;
+
+  return clean;
+}
+
 export default function FilterView({ initialGenre, initialSearch, initialChapters, onNovelSelect }: FilterViewProps) {
-  const [selectedGenre, setSelectedGenre] = useState<string>(initialGenre || 'Tất cả');
+  const [selectedGenre, setSelectedGenre] = useState<string>(resolveGenreName(initialGenre));
   const [selectedStatus, setSelectedStatus] = useState<'Tất cả' | 'Đang ra' | 'Hoàn thành'>('Tất cả');
   const [selectedGroup, setSelectedGroup] = useState<string>('Tất cả');
   const [selectedChapters, setSelectedChapters] = useState<string>(initialChapters || 'Tất cả');
   const [sortBy, setSortBy] = useState<'Lượt xem' | 'Đánh giá' | 'Mới nhất'>('Mới nhất');
   const [searchTerm, setSearchTerm] = useState<string>(initialSearch || '');
   const [currentPage, setCurrentPage] = useState(1);
-  const [allNovels, setAllNovels] = useState<Novel[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [allNovels, setAllNovels] = useState<Novel[]>(FALLBACK_NOVELS as unknown as Novel[]);
+  const [loading, setLoading] = useState(false);
 
-  // Fetch data
+  // Fetch live data with fallback resilience
   useEffect(() => {
     const qNovels = query(collection(db, 'novels'), orderBy('createdAt', 'desc'));
     const unsubscribe = onSnapshot(qNovels, (snapshot) => {
-      const fetched = snapshot.docs
-        .map(doc => ({ id: doc.id, ...doc.data() } as Novel))
-        .filter(isPublicItem);
-      setAllNovels(fetched);
+      if (snapshot && !snapshot.empty) {
+        const fetched = snapshot.docs
+          .map(doc => ({ id: doc.id, ...doc.data() } as Novel))
+          .filter(isPublicItem);
+        if (fetched.length > 0) {
+          setAllNovels(fetched);
+        }
+      }
       setLoading(false);
     }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'novels');
+      console.warn('[FilterView] Using static novel catalog fallback:', error?.message || error);
       setLoading(false);
     });
     return () => unsubscribe();
   }, []);
 
-  // Update searchTerm & selectedChapters when props change
+  // Sync props changes
+  useEffect(() => {
+    if (initialGenre !== undefined) {
+      setSelectedGenre(resolveGenreName(initialGenre));
+      setCurrentPage(1);
+    }
+  }, [initialGenre]);
+
   useEffect(() => {
     if (initialSearch !== undefined) {
       setSearchTerm(initialSearch);
@@ -86,13 +131,20 @@ export default function FilterView({ initialGenre, initialSearch, initialChapter
 
   const filteredNovels = useMemo(() => {
     const normalizedSearch = normalize(searchTerm);
-    
+    const targetGenreSlug = slugifyGenre(selectedGenre);
+    const targetGenreNorm = normalize(selectedGenre);
+
     return allNovels.filter(novel => {
-      const genreMatch = selectedGenre === 'Tất cả' || (novel.genres && novel.genres.includes(selectedGenre));
+      const genreMatch = selectedGenre === 'Tất cả' || (novel.genres && novel.genres.some(g => {
+        return g.toLowerCase() === selectedGenre.toLowerCase()
+          || slugifyGenre(g) === targetGenreSlug
+          || normalize(g) === targetGenreNorm;
+      }));
+
       const statusMatch = selectedStatus === 'Tất cả' || novel.status === selectedStatus;
       const groupMatch = selectedGroup === 'Tất cả' || novel.translationGroup === selectedGroup;
       
-      const chapterCount = novel.chapters ? novel.chapters.length : 0;
+      const chapterCount = getNovelTotalChapters(novel);
       let chapterMatch = true;
       if (selectedChapters === 'Dưới 100 chương') chapterMatch = chapterCount < 100;
       else if (selectedChapters === '100 - 500 chương') chapterMatch = chapterCount >= 100 && chapterCount <= 500;
@@ -118,168 +170,168 @@ export default function FilterView({ initialGenre, initialSearch, initialChapter
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const getCoverUrl = (url: string | undefined, id: string) => {
-    return url || `https://picsum.photos/seed/novel-${id}/400/600`;
-  };
-
-
-
   return (
-    <main className="w-full max-w-[1200px] px-8 pb-32 mx-auto pt-12">
-      <div className="flex flex-col gap-12">
+    <main className="w-full max-w-[1200px] px-4 md:px-8 pb-32 mx-auto pt-6 md:pt-12">
+      <div className="flex flex-col gap-8 md:gap-12">
         {/* Header & Filter Controls */}
-        <div className="bg-surface p-10 rounded-[40px] shadow-2xl border border-accent/10">
-          <div className="flex items-center gap-4 mb-10">
+        <div className="bg-surface p-6 md:p-10 rounded-[32px] md:rounded-[40px] shadow-2xl border border-accent/10">
+          <div className="flex items-center gap-4 mb-8 md:mb-10">
             <div className="p-3 bg-primary/10 rounded-2xl text-primary">
-              <Filter className="size-7" />
+              <Filter className="size-6 md:size-7" />
             </div>
             <div>
-              <h1 className="font-display text-4xl font-black text-text-main tracking-tighter uppercase">Bộ lọc truyện</h1>
-              <p className="text-sm text-muted font-medium">Tìm kiếm bộ truyện phù hợp với sở thích của bạn</p>
+              <h1 className="font-display text-3xl md:text-4xl font-black text-text-main tracking-tighter uppercase">
+                {selectedGenre !== 'Tất cả' ? `Truyện ${selectedGenre}` : 'Bộ lọc truyện'}
+              </h1>
+              <p className="text-xs md:text-sm text-muted font-medium">Tìm kiếm tác phẩm phù hợp theo thể loại và tiêu chí của bạn</p>
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-10">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 md:gap-6">
             {/* Genre Filter */}
-            <div>
-              <label className="text-[10px] uppercase tracking-[0.2em] font-black text-muted mb-4 block">Thể loại</label>
-              <div className="relative group">
+            <div className="flex flex-col gap-2">
+              <label className="text-[10px] font-black uppercase tracking-widest text-muted">Thể loại</label>
+              <div className="relative">
                 <select 
-                  value={selectedGenre}
+                  value={selectedGenre} 
                   onChange={(e) => setSelectedGenre(e.target.value)}
-                  className="w-full h-14 pl-6 pr-12 bg-background-light rounded-2xl border-none outline-none appearance-none font-bold text-text-main cursor-pointer focus:ring-2 focus:ring-primary/20 transition-all"
+                  className="w-full bg-background-light text-text-main font-bold text-sm px-4 py-3.5 rounded-2xl appearance-none border border-accent/20 focus:outline-none focus:border-primary transition-all cursor-pointer"
                 >
                   <option value="Tất cả">Tất cả thể loại</option>
                   {GENRES.map(genre => (
                     <option key={genre} value={genre}>{genre}</option>
                   ))}
                 </select>
-                <ChevronDown className="absolute right-5 top-1/2 -translate-y-1/2 size-5 text-muted pointer-events-none group-hover:text-primary transition-colors" />
-              </div>
-            </div>
-
-            {/* Chapters Filter */}
-            <div>
-              <label className="text-[10px] uppercase tracking-[0.2em] font-black text-muted mb-4 block">Số chương</label>
-              <div className="relative group">
-                <select 
-                  value={selectedChapters}
-                  onChange={(e) => setSelectedChapters(e.target.value)}
-                  className="w-full h-14 pl-6 pr-12 bg-background-light rounded-2xl border-none outline-none appearance-none font-bold text-text-main cursor-pointer focus:ring-2 focus:ring-primary/20 transition-all"
-                >
-                  <option value="Tất cả">Mọi độ dài</option>
-                  {['Dưới 100 chương', '100 - 500 chương', '500 - 1000 chương', 'Trên 1000 chương'].map(chaps => (
-                    <option key={chaps} value={chaps}>{chaps}</option>
-                  ))}
-                </select>
-                <ChevronDown className="absolute right-5 top-1/2 -translate-y-1/2 size-5 text-muted pointer-events-none group-hover:text-primary transition-colors" />
-              </div>
-            </div>
-
-            {/* Translation Group Filter */}
-            <div>
-              <label className="text-[10px] uppercase tracking-[0.2em] font-black text-muted mb-4 block">Nhóm dịch</label>
-              <div className="relative group">
-                <select 
-                  value={selectedGroup}
-                  onChange={(e) => setSelectedGroup(e.target.value)}
-                  className="w-full h-14 pl-6 pr-12 bg-background-light rounded-2xl border-none outline-none appearance-none font-bold text-text-main cursor-pointer focus:ring-2 focus:ring-primary/20 transition-all"
-                >
-                  <option value="Tất cả">Tất cả nhóm dịch</option>
-                  {translationGroups.map(group => (
-                    <option key={group} value={group}>{group}</option>
-                  ))}
-                </select>
-                <ChevronDown className="absolute right-5 top-1/2 -translate-y-1/2 size-5 text-muted pointer-events-none group-hover:text-primary transition-colors" />
+                <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 size-4 text-muted pointer-events-none" />
               </div>
             </div>
 
             {/* Status Filter */}
-            <div>
-              <label className="text-[10px] uppercase tracking-[0.2em] font-black text-muted mb-4 block">Trạng thái</label>
-              <div className="flex bg-background-light p-1.5 rounded-2xl">
-                {['Tất cả', 'Đang ra', 'Hoàn thành'].map((status) => (
-                  <button
-                    key={status}
-                    onClick={() => setSelectedStatus(status as any)}
-                    className={`flex-1 py-3 rounded-xl text-xs font-black transition-all ${selectedStatus === status ? 'bg-surface text-primary shadow-md' : 'text-muted hover:text-text-main'}`}
-                  >
-                    {status}
-                  </button>
-                ))}
+            <div className="flex flex-col gap-2">
+              <label className="text-[10px] font-black uppercase tracking-widest text-muted">Tình trạng</label>
+              <div className="relative">
+                <select 
+                  value={selectedStatus} 
+                  onChange={(e) => setSelectedStatus(e.target.value as any)}
+                  className="w-full bg-background-light text-text-main font-bold text-sm px-4 py-3.5 rounded-2xl appearance-none border border-accent/20 focus:outline-none focus:border-primary transition-all cursor-pointer"
+                >
+                  <option value="Tất cả">Tất cả tình trạng</option>
+                  <option value="Đang ra">Đang ra</option>
+                  <option value="Hoàn thành">Hoàn thành (Full)</option>
+                </select>
+                <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 size-4 text-muted pointer-events-none" />
               </div>
             </div>
 
-            {/* Sort Filter */}
-            <div>
-              <label className="text-[10px] uppercase tracking-[0.2em] font-black text-muted mb-4 block">Sắp xếp theo</label>
-              <div className="relative group">
+            {/* Translation Group Filter */}
+            <div className="flex flex-col gap-2">
+              <label className="text-[10px] font-black uppercase tracking-widest text-muted">Nhóm dịch</label>
+              <div className="relative">
                 <select 
-                  value={sortBy}
-                  onChange={(e) => setSortBy(e.target.value as any)}
-                  className="w-full h-14 pl-6 pr-12 bg-background-light rounded-2xl border-none outline-none appearance-none font-bold text-text-main cursor-pointer focus:ring-2 focus:ring-primary/20 transition-all"
+                  value={selectedGroup} 
+                  onChange={(e) => setSelectedGroup(e.target.value)}
+                  className="w-full bg-background-light text-text-main font-bold text-sm px-4 py-3.5 rounded-2xl appearance-none border border-accent/20 focus:outline-none focus:border-primary transition-all cursor-pointer"
                 >
-                  <option value="Mới nhất">Mới cập nhật</option>
-                  <option value="Lượt xem">Lượt xem nhiều nhất</option>
-                  <option value="Đánh giá">Đánh giá cao nhất</option>
+                  <option value="Tất cả">Tất cả nhóm</option>
+                  {translationGroups.map(group => (
+                    <option key={group} value={group}>{group}</option>
+                  ))}
                 </select>
-                <ChevronDown className="absolute right-5 top-1/2 -translate-y-1/2 size-5 text-muted pointer-events-none group-hover:text-primary transition-colors" />
+                <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 size-4 text-muted pointer-events-none" />
+              </div>
+            </div>
+
+            {/* Chapters Filter */}
+            <div className="flex flex-col gap-2">
+              <label className="text-[10px] font-black uppercase tracking-widest text-muted">Số chương</label>
+              <div className="relative">
+                <select 
+                  value={selectedChapters} 
+                  onChange={(e) => setSelectedChapters(e.target.value)}
+                  className="w-full bg-background-light text-text-main font-bold text-sm px-4 py-3.5 rounded-2xl appearance-none border border-accent/20 focus:outline-none focus:border-primary transition-all cursor-pointer"
+                >
+                  <option value="Tất cả">Mọi số chương</option>
+                  <option value="Dưới 100 chương">&lt; 100 chương</option>
+                  <option value="100 - 500 chương">100 - 500 chương</option>
+                  <option value="500 - 1000 chương">500 - 1000 chương</option>
+                  <option value="Trên 1000 chương">&gt; 1000 chương</option>
+                </select>
+                <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 size-4 text-muted pointer-events-none" />
               </div>
             </div>
           </div>
         </div>
 
-        {/* Results Grid */}
-        <div className="flex flex-col gap-10">
-          <div className="flex items-center justify-between">
-            <h2 className="font-display text-2xl font-black text-text-main uppercase tracking-tighter">
-              Kết quả <span className="text-primary ml-2">({filteredNovels.length})</span>
-            </h2>
+        {/* Results Area */}
+        <div>
+          <div className="flex items-center justify-between mb-8">
+            <span className="text-sm font-bold text-muted">
+              Kết quả ({filteredNovels.length})
+              {selectedGenre !== 'Tất cả' && <span className="text-primary ml-1.5">• {selectedGenre}</span>}
+            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold text-muted uppercase tracking-wider hidden sm:inline">Sắp xếp:</span>
+              <div className="flex bg-surface p-1 rounded-xl border border-accent/10">
+                {(['Mới nhất', 'Lượt xem', 'Đánh giá'] as const).map(option => (
+                  <button
+                    key={option}
+                    onClick={() => setSortBy(option)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${sortBy === option ? 'bg-primary text-white shadow-md shadow-primary/20' : 'text-muted hover:text-text-main'}`}
+                  >
+                    {option}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
 
-          {paginatedNovels.length > 0 ? (
+          {loading && allNovels.length === 0 ? (
+            <div className="flex items-center justify-center py-32">
+              <Loader2 className="animate-spin text-primary size-10" />
+            </div>
+          ) : paginatedNovels.length > 0 ? (
             <>
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-8">
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4 md:gap-6 mb-16">
                 {paginatedNovels.map((novel) => (
                   <div 
-                    key={novel.id}
+                    key={novel.id} 
                     onClick={() => onNovelSelect(novel)}
-                    className="flex flex-col gap-4 group cursor-pointer"
+                    className="flex flex-col gap-3 group cursor-pointer"
                   >
-                    <div className="relative aspect-[3/4.5] rounded-[24px] overflow-hidden shadow-xl group-hover:shadow-primary/20 transition-all duration-500">
+                    <div className="relative aspect-[3/4.2] rounded-2xl overflow-hidden shadow-lg border border-accent/10 group-hover:border-primary/50 group-hover:shadow-2xl transition-all duration-500 bg-background-light">
                       <img 
-                        src={getCoverUrl(novel.coverUrl, novel.id)} 
+                        src={resolveNovelCover(novel)} 
                         alt={novel.title} 
                         referrerPolicy="no-referrer"
                         className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110" 
                       />
-                      <div className="absolute top-4 left-4 flex flex-col gap-2 z-10">
+                      <div className="absolute top-2.5 left-2.5 flex flex-col gap-1.5 z-10">
                         {novel.isHot && (
-                          <div className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-red-600 to-orange-500 text-white text-[10px] font-black rounded-xl uppercase shadow-xl shadow-red-500/40">
-                            <Star className="size-3 fill-white text-white" />
+                          <div className="flex items-center gap-1 px-2 py-0.5 bg-gradient-to-r from-red-600 to-orange-500 text-white text-[9px] font-black rounded-md uppercase shadow-lg shadow-red-500/40">
+                            <Star className="size-2.5 fill-white text-white" />
                             <span>Hot</span>
                           </div>
                         )}
-                        {novel.status === 'Hoàn thành' && (
-                          <span className="px-3 py-1.5 bg-green-500 text-white text-[10px] font-black rounded-xl uppercase shadow-xl">Full</span>
+                        {(novel.isFull || novel.status === 'Hoàn thành') && (
+                          <span className="px-2 py-0.5 bg-emerald-500 text-white text-[9px] font-black rounded-md uppercase shadow-md">Full</span>
                         )}
                       </div>
-                      <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-all duration-500 flex flex-col justify-end p-6">
-                         <div className="flex items-center gap-4 text-white animate-in slide-in-from-bottom-4 duration-500">
-                            <div className="flex items-center gap-1.5">
-                              <Star className="size-4 fill-yellow-400 text-yellow-400" />
-                              <span className="font-black text-sm">{novel.rating}</span>
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-all duration-500 flex flex-col justify-end p-4">
+                         <div className="flex items-center gap-3 text-white">
+                            <div className="flex items-center gap-1">
+                              <Star className="size-3.5 fill-yellow-400 text-yellow-400" />
+                              <span className="font-black text-xs">{novel.rating || '4.9'}</span>
                             </div>
                             <div className="w-[1px] h-3 bg-white/20"></div>
-                            <div className="flex items-center gap-1.5">
-                              <Eye className="size-4 text-white/80" />
-                              <span className="font-bold text-sm">{formatViews(novel)}</span>
+                            <div className="flex items-center gap-1">
+                              <Eye className="size-3.5 text-white/80" />
+                              <span className="font-bold text-xs">{formatViews(novel)}</span>
                             </div>
                          </div>
                       </div>
                     </div>
                     <div className="flex flex-col px-1">
-                      <h3 className="font-bold text-text-main line-clamp-2 group-hover:text-primary transition-colors leading-tight text-base mb-1">{novel.title}</h3>
+                      <h3 className="font-bold text-text-main line-clamp-1 group-hover:text-primary transition-colors leading-tight text-sm mb-1">{novel.title}</h3>
                       <p className="text-xs text-muted font-medium truncate">{novel.author}</p>
                     </div>
                   </div>
@@ -298,7 +350,7 @@ export default function FilterView({ initialGenre, initialSearch, initialChapter
                 <BookOpen className="size-12" />
               </div>
               <h3 className="text-xl font-bold text-text-main mb-2">Không tìm thấy truyện</h3>
-              <p className="text-muted">Hãy thử thay đổi bộ lọc để tìm kiếm kết quả khác nhé!</p>
+              <p className="text-muted text-sm">Hãy thử chọn thể loại khác hoặc chuyển về &quot;Tất cả thể loại&quot; nhé!</p>
             </div>
           )}
         </div>
